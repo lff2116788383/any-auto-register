@@ -54,7 +54,7 @@ class ChatGPTPlatform(BasePlatform):
             },
         )
 
-    def _run_protocol_oauth(self, ctx) -> dict:
+    def _run_browser_oauth(self, ctx) -> dict:
         from platforms.chatgpt.browser_oauth import register_with_browser_oauth
 
         return register_with_browser_oauth(
@@ -67,6 +67,63 @@ class ChatGPTPlatform(BasePlatform):
             chrome_user_data_dir=ctx.identity.chrome_user_data_dir,
             chrome_cdp_url=ctx.identity.chrome_cdp_url,
         )
+
+    def _run_protocol_oauth(self, ctx) -> dict:
+        from curl_cffi import requests as curl_requests
+        from core.oauth_browser import finalize_oauth_email
+        from platforms.chatgpt.browser_oauth import _fetch_profile
+        from platforms.chatgpt.oauth import OAuthManager
+
+        manager = OAuthManager(proxy_url=ctx.proxy)
+        oauth_start = manager.start_oauth()
+        token_info = manager.handle_callback(
+            callback_url=ctx.identity.callback_url,
+            expected_state=oauth_start.state,
+            code_verifier=oauth_start.code_verifier,
+        )
+        profile = _fetch_profile(token_info.get("access_token", ""), proxy=ctx.proxy)
+        resolved_email = finalize_oauth_email(
+            token_info.get("email") or profile.get("email", ""),
+            ctx.identity.email,
+            "ChatGPT",
+        )
+
+        session_token = ""
+        cookies = ""
+        try:
+            response = curl_requests.get(
+                "https://chatgpt.com/api/auth/session",
+                headers={
+                    "authorization": f"Bearer {token_info.get('access_token', '')}",
+                    "accept": "application/json",
+                    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                },
+                proxies={"http": ctx.proxy, "https": ctx.proxy} if ctx.proxy else None,
+                timeout=20,
+                impersonate="chrome124",
+            )
+            set_cookie = response.headers.get("set-cookie", "")
+            cookies = set_cookie
+            for part in set_cookie.split(";"):
+                part = part.strip()
+                if part.startswith("__Secure-next-auth.session-token="):
+                    session_token = part.split("=", 1)[1]
+                    break
+        except Exception:
+            pass
+
+        return {
+            "email": resolved_email,
+            "account_id": token_info.get("account_id", ""),
+            "access_token": token_info.get("access_token", ""),
+            "refresh_token": token_info.get("refresh_token", ""),
+            "id_token": token_info.get("id_token", ""),
+            "session_token": session_token,
+            "cookies": cookies,
+            "workspace_id": "",
+            "profile": profile,
+        }
 
     def build_browser_registration_adapter(self):
         return BrowserRegistrationAdapter(
@@ -81,7 +138,7 @@ class ChatGPTPlatform(BasePlatform):
                 email=ctx.identity.email or "",
                 password=ctx.password or "",
             ),
-            oauth_runner=self._run_protocol_oauth,
+            oauth_runner=self._run_browser_oauth,
             capability=RegistrationCapability(oauth_headless_requires_browser_reuse=True),
             otp_spec=OtpSpec(wait_message="等待验证码...", timeout=600),
         )

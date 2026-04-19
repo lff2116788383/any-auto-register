@@ -431,11 +431,13 @@ class TaskLogger:
         _mutate_task(self.task_id, _update)
 
     def record_error(self, error: str) -> None:
+        sanitized_error = self._sanitize_console_message(error)
+
         def _update(task: TaskModel) -> None:
             task.error_count += 1
             result = task.get_result()
             errors = list(result.get("errors", []))
-            errors.append(error)
+            errors.append(sanitized_error)
             result["errors"] = errors
             task.set_result(result)
 
@@ -460,11 +462,13 @@ class TaskLogger:
         _mutate_task(self.task_id, _update)
 
     def finish(self, status: str, *, error: str = "") -> None:
+        sanitized_error = self._sanitize_console_message(error) if error else ""
+
         def _update(task: TaskModel) -> None:
             task.status = status
             task.finished_at = _utcnow()
-            if error:
-                task.error = error
+            if sanitized_error:
+                task.error = sanitized_error
 
         _mutate_task(self.task_id, _update)
         event_level = "error" if status == TASK_STATUS_FAILED else ("warning" if status in {TASK_STATUS_INTERRUPTED, TASK_STATUS_CANCELLED} else "info")
