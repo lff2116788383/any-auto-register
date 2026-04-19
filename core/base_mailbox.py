@@ -445,6 +445,39 @@ class LocalMicrosoftMailbox(BaseMailbox):
         match = re.search(r'[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}', raw, re.IGNORECASE)
         return str(match.group(0) if match else raw)
 
+    @staticmethod
+    def _encode_imap_mailbox_name(value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            raw.encode("ascii")
+            return raw
+        except UnicodeEncodeError:
+            pass
+
+        def _flush_buffer(chunks: list[str]) -> str:
+            if not chunks:
+                return ""
+            utf16 = "".join(chunks).encode("utf-16-be")
+            import base64
+            encoded = base64.b64encode(utf16).decode("ascii").rstrip("=")
+            return f"&{encoded.replace('/', ',')}-"
+
+        pieces: list[str] = []
+        non_ascii: list[str] = []
+        for ch in raw:
+            if ord(ch) <= 0x7F:
+                if non_ascii:
+                    pieces.append(_flush_buffer(non_ascii))
+                    non_ascii.clear()
+                pieces.append("&-" if ch == "&" else ch)
+            else:
+                non_ascii.append(ch)
+        if non_ascii:
+            pieces.append(_flush_buffer(non_ascii))
+        return "".join(pieces)
+
     def _refresh_graph_access_token(self, *, client_id: str, refresh_token: str, cache_key: str) -> str:
         import requests
 
@@ -630,15 +663,16 @@ class LocalMicrosoftMailbox(BaseMailbox):
                 client = imaplib.IMAP4(self.imap_host, self.imap_port)
             client.authenticate("XOAUTH2", lambda _: auth_bytes)
 
-            folders: list[str] = []
+            folders: list[tuple[str, str]] = []
             primary_folder = str(self.imap_folder or "INBOX").strip() or "INBOX"
             for folder in [primary_folder, "Junk", '"Junk Email"', "Spam", '"垃圾邮件"']:
-                normalized = str(folder or "").strip()
-                if normalized and normalized not in folders:
-                    folders.append(normalized)
+                display_name = str(folder or "").strip()
+                encoded_name = self._encode_imap_mailbox_name(display_name)
+                if encoded_name and encoded_name not in {item[1] for item in folders}:
+                    folders.append((display_name, encoded_name))
 
             seen_ids: set[str] = set()
-            for folder in folders:
+            for _, folder in folders:
                 status, _ = client.select(folder)
                 if status != "OK":
                     continue

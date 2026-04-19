@@ -369,6 +369,28 @@ class TaskLogger:
     def __init__(self, task_id: str):
         self.task_id = task_id
 
+    @staticmethod
+    def _sanitize_console_message(message: str) -> str:
+        text = str(message)
+        replacements = {
+            "✓": "[OK]",
+            "✔": "[OK]",
+            "✗": "[FAIL]",
+            "✘": "[FAIL]",
+            "⚠️": "[WARN]",
+            "⚠": "[WARN]",
+            "✅": "[OK]",
+            "❌": "[FAIL]",
+            "…": "...",
+        }
+        for src, target in replacements.items():
+            text = text.replace(src, target)
+        try:
+            text.encode("gbk")
+            return text
+        except UnicodeEncodeError:
+            return text.encode("gbk", errors="replace").decode("gbk")
+
     def log(self, message: str, *, level: str = "info", event_type: str = "log", detail: dict | None = None) -> None:
         append_task_event(
             self.task_id,
@@ -377,7 +399,7 @@ class TaskLogger:
             level=level,
             detail=detail,
         )
-        print(f"[task:{self.task_id}] {message}")
+        print(f"[task:{self.task_id}] {self._sanitize_console_message(message)}")
 
     def mark_running(self) -> None:
         def _update(task: TaskModel) -> None:
@@ -656,7 +678,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if resolved_proxy:
                 proxy_pool.report_success(resolved_proxy)
             logger.record_success()
-            logger.log(f"✓ 注册成功: {account.email}")
+            logger.log(f"[OK] 注册成功: {account.email}")
             _save_task_log(platform_name, account.email, "success")
             _auto_upload_cpa(logger, account)
             _auto_push_any2api(logger, account)
@@ -672,7 +694,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 proxy_pool.report_fail(resolved_proxy)
             error = str(exc)
             logger.record_error(error)
-            logger.log(f"✗ 注册失败: {error}", level="error")
+            logger.log(f"[FAIL] 注册失败: {error}", level="error")
             _save_task_log(platform_name, email or "", "failed", error=error)
             return error
 

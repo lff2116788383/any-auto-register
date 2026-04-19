@@ -139,9 +139,15 @@ def test_local_microsoft_uses_imap_oauth_scope(monkeypatch):
 
         def select(self, folder):
             captured["selected_folders"].append(folder)
+            try:
+                folder.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise AssertionError(f"folder should stay ascii-safe: {folder!r}") from exc
             if folder == "INBOX":
                 return "OK", [b""]
             if folder == "Junk":
+                return "OK", [b""]
+            if folder == '"&V4NXPpCuTvY-"':
                 return "OK", [b""]
             return "NO", [b""]
 
@@ -169,6 +175,7 @@ def test_local_microsoft_uses_imap_oauth_scope(monkeypatch):
     assert captured["mechanism"] == "XOAUTH2"
     assert captured["auth_payload"] == b"user=demo@hotmail.com\x01auth=Bearer imap-token\x01\x01"
     assert captured["selected_folders"][:2] == ["INBOX", "Junk"]
+    assert '"&V4NXPpCuTvY-"' in captured["selected_folders"]
 
 
 def test_local_microsoft_sanitizes_imap_login_before_encoding(monkeypatch):
