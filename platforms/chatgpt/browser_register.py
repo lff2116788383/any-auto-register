@@ -1,13 +1,39 @@
 """ChatGPT 浏览器注册流程（Camoufox）。"""
+import base64
+import json
+import random
+import re
+import secrets
 import time
 import uuid
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
 
+
 from camoufox.sync_api import Camoufox
 
 OPENAI_AUTH = "https://auth.openai.com"
 CHATGPT_APP = "https://chatgpt.com"
+BROWSER_BOOTSTRAP_URLS = [
+    f"{OPENAI_AUTH}/create-account",
+    f"{OPENAI_AUTH}/log-in",
+    f"{CHATGPT_APP}/",
+]
+
+
+def _navigate_with_fallback(page, targets: list[str], log, *, wait_until: str = "domcontentloaded", timeout: int = 30000) -> str:
+    last_error = None
+    for target in [str(item or "").strip() for item in targets if str(item or "").strip()]:
+        try:
+            log(f"尝试访问: {target}")
+            page.goto(target, wait_until=wait_until, timeout=timeout)
+            return str(page.url or target)
+        except Exception as exc:
+            last_error = exc
+            log(f"访问失败: {target} -> {exc}")
+            time.sleep(1)
+    raise last_error or RuntimeError("浏览器导航失败")
+
 
 
 def _build_proxy_config(proxy: Optional[str]) -> Optional[dict]:
@@ -1065,7 +1091,36 @@ def _start_browser_signin(page, email: str, device_id: str, csrf_token: str) -> 
     return ""
 
 
-def _browser_authorize(page, auth_url: str, log) -> str:
+
+def _start_browser_signup(page, email: str, device_id: str, user_agent: str, log) -> dict:
+    current_url = str(page.url or f"{OPENAI_AUTH}/create-account")
+    headers = _build_browser_headers(
+        user_agent=user_agent,
+        accept="application/json",
+        referer=current_url if current_url.startswith(OPENAI_AUTH) else f"{OPENAI_AUTH}/create-account",
+        origin=OPENAI_AUTH,
+        content_type="application/json",
+        extra_headers={
+            "sec-fetch-site": "same-origin",
+            "oai-device-id": device_id,
+            **_generate_datadog_trace_headers(),
+        },
+    )
+    sentinel = _build_browser_sentinel_token(page, device_id, "authorize_continue", user_agent)
+    if sentinel:
+        headers["openai-sentinel-token"] = sentinel
+    log(f"提交邮箱: {email}")
+    _browser_pause(page)
+    return _browser_fetch(
+        page,
+        f"{OPENAI_AUTH}/api/accounts/authorize/continue",
+        method="POST",
+        headers=headers,
+        body=json.dumps({"username": {"value": email, "kind": "email"}, "screen_hint": "signup"}),
+        redirect="follow",
+    )
+
+
     if not auth_url:
         return ""
     try:
@@ -1767,23 +1822,16 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, lo
     except Exception:
         user_agent = _random_chrome_ua()
 
-    log("访问 ChatGPT 首页...")
-    page.goto(f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000)
+    log("初始化浏览器入口...")
+    _navigate_with_fallback(page, BROWSER_BOOTSTRAP_URLS, log)
     _seed_browser_device_id(page, device_id)
 
-    log("获取 CSRF token...")
-    csrf_token = _get_browser_csrf_token(page)
-    if not csrf_token:
-        raise RuntimeError("获取 CSRF token 失败")
 
-    log(f"提交邮箱: {email}")
-    authorize_url = _start_browser_signin(page, email, device_id, csrf_token)
-    if not authorize_url:
-        raise RuntimeError("提交邮箱失败，未获取 authorize URL")
+    log("提交邮箱并初始化注册状态...")
+    start_resp = _start_browser_signup(page, email, device_id, user_agent, log)
+    if not start_resp.get("ok"):
+        raise RuntimeError(f"提交邮箱失败: {(start_resp.get('text') or '')[:300]}")
 
-    final_url = _browser_authorize(page, authorize_url, log)
-    if not final_url:
-        raise RuntimeError("访问 authorize URL 失败")
     auth_cookies = _get_cookies(page)
     log(
         "授权态 cookies: "
@@ -1791,7 +1839,8 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, lo
         f"oai-did={'yes' if auth_cookies.get('oai-did') else 'no'}"
     )
 
-    state = _extract_flow_state(None, final_url)
+    state = _extract_flow_state(start_resp.get("data"), start_resp.get("url", page.url))
+
     log(f"注册状态起点: page={state.get('page_type') or '-'} url={(state.get('current_url') or '')[:100]}")
     register_submitted = False
     seen_states: dict[str, int] = {}

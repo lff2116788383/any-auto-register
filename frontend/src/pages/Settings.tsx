@@ -6,7 +6,8 @@ import { apiFetch } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
-import { Save, Eye, EyeOff, Mail, Shield, Cpu, RefreshCw, CheckCircle, XCircle, Sliders, Plus, X, Orbit, Package2, Sparkles } from 'lucide-react'
+import { Save, Eye, EyeOff, Mail, Shield, Cpu, RefreshCw, CheckCircle, XCircle, Sliders, Plus, X, Orbit, Package2, Sparkles, BarChart3 } from 'lucide-react'
+
 import { cn } from '@/lib/utils'
 
 type ProviderType = 'mailbox' | 'captcha'
@@ -35,7 +36,98 @@ function SettingsMetric({
   )
 }
 
+
+
+function LocalMicrosoftImportModal({
+  pool,
+  setPool,
+  replaceMode,
+  setReplaceMode,
+  payload,
+  setPayload,
+  importing,
+  importResult,
+  onClose,
+  onSubmit,
+}: {
+  pool: string
+  setPool: (value: string) => void
+  replaceMode: boolean
+  setReplaceMode: (value: boolean) => void
+  payload: string
+  setPayload: (value: string) => void
+  importing: boolean
+  importResult: string
+  onClose: () => void
+  onSubmit: () => void
+}) {
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className="dialog-panel dialog-panel-md overflow-y-auto" style={{ maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">导入 Local Microsoft 邮箱池</h2>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">仅支持每行“邮箱----密码----client_id----refresh_token”格式，一键写入邮箱池。</p>
+          </div>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="px-6 py-4 space-y-3">
+          <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
+            <label className="text-sm text-[var(--text-secondary)] font-medium">池名称</label>
+            <div className="col-span-2">
+              <input
+                value={pool}
+                onChange={e => setPool(e.target.value)}
+                placeholder="default"
+                className="control-surface"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
+            <label className="text-sm text-[var(--text-secondary)] font-medium">导入模式</label>
+            <div className="col-span-2">
+              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={replaceMode}
+                  onChange={e => setReplaceMode(e.target.checked)}
+                  className="checkbox-accent"
+                />
+                覆盖该池已有数据（replace=true）
+              </label>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm text-[var(--text-secondary)] font-medium mb-2">导入内容（每行一个账号）</label>
+            <textarea
+              value={payload}
+              onChange={e => setPayload(e.target.value)}
+              rows={12}
+              className="control-surface control-surface-mono resize-none"
+              placeholder={"yourname@outlook.com----yourPassword----00000000-0000-0000-0000-000000000000----<refresh_token>\nsecond@outlook.com----pass2----00000000-0000-0000-0000-000000000000----<refresh_token2>"}
+            />
+          </div>
+          {importResult ? (
+            <div className="rounded-[14px] border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+              {importResult}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex gap-3 px-6 py-4 border-t border-[var(--border)]">
+          <Button onClick={onSubmit} disabled={importing} className="flex-1">
+            <Plus className="h-4 w-4 mr-2" />
+            {importing ? '导入中...' : '开始导入'}
+          </Button>
+          <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PlatformCapsTab() {
+
+
   const [platforms, setPlatforms] = useState<any[]>([])
   const [drafts, setDrafts] = useState<Record<string, any>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -586,6 +678,34 @@ export default function Settings() {
   const [providerDeleting, setProviderDeleting] = useState<Record<string, boolean>>({})
   const [providerCreating, setProviderCreating] = useState<Record<string, boolean>>({})
   const [solverRunning, setSolverRunning] = useState<boolean | null>(null)
+  const [localMsStats, setLocalMsStats] = useState<any>(null)
+  const [localMsLoading, setLocalMsLoading] = useState(false)
+  const [localMsError, setLocalMsError] = useState('')
+  const [localMsMailboxes, setLocalMsMailboxes] = useState<any[]>([])
+  const [localMsListLoading, setLocalMsListLoading] = useState(false)
+  const [localMsListError, setLocalMsListError] = useState('')
+  const [localMsPage, setLocalMsPage] = useState(1)
+  const [localMsPageSize, setLocalMsPageSize] = useState(10)
+  const [localMsTotal, setLocalMsTotal] = useState(0)
+  const [localMsPages, setLocalMsPages] = useState(1)
+  const [localMsSelectedIds, setLocalMsSelectedIds] = useState<number[]>([])
+
+  const [localMsBatchStatus, setLocalMsBatchStatus] = useState('active')
+  const [localMsBatchSubStatus, setLocalMsBatchSubStatus] = useState('raw_master')
+  const [localMsBatchLastError, setLocalMsBatchLastError] = useState('')
+  const [localMsBatchCooldown, setLocalMsBatchCooldown] = useState('0')
+  const [localMsBatchUpdating, setLocalMsBatchUpdating] = useState(false)
+  const [localMsBatchDeleting, setLocalMsBatchDeleting] = useState(false)
+  const [localMsImportOpen, setLocalMsImportOpen] = useState(false)
+
+  const [localMsImportPool, setLocalMsImportPool] = useState('default')
+  const [localMsImportPayload, setLocalMsImportPayload] = useState('yourname@outlook.com----yourPassword----00000000-0000-0000-0000-000000000000----<refresh_token>')
+
+  const [localMsImportReplace, setLocalMsImportReplace] = useState(false)
+  const [localMsImporting, setLocalMsImporting] = useState(false)
+  const [localMsImportResult, setLocalMsImportResult] = useState('')
+
+
 
   const loadConfigData = async () => {
     const [cfg, options] = await Promise.all([
@@ -633,7 +753,207 @@ export default function Settings() {
   }
   useEffect(() => { checkSolver() }, [])
 
+  const getLocalMsPool = () => {
+    const localMsSetting = providerSettings.mailbox.find(item => item.provider_key === 'local_microsoft')
+    return String(localMsSetting?.config?.local_ms_pool || 'default')
+  }
+
+  const refreshLocalMsStats = async () => {
+    const localMsSetting = providerSettings.mailbox.find(item => item.provider_key === 'local_microsoft')
+    if (!localMsSetting) {
+      setLocalMsStats(null)
+      setLocalMsError('')
+      return
+    }
+    const pool = getLocalMsPool()
+    setLocalMsLoading(true)
+    setLocalMsError('')
+    try {
+      const data = await apiFetch(`/local-microsoft/mailboxes/stats?pool=${encodeURIComponent(pool)}`)
+      setLocalMsStats(data)
+    } catch (error: any) {
+      setLocalMsError(error?.message || '加载 local_microsoft 池统计失败')
+    } finally {
+      setLocalMsLoading(false)
+    }
+  }
+
+  const refreshLocalMsMailboxes = async (targetPage?: number, targetPageSize?: number) => {
+    const localMsSetting = providerSettings.mailbox.find(item => item.provider_key === 'local_microsoft')
+    if (!localMsSetting) {
+      setLocalMsMailboxes([])
+      setLocalMsListError('')
+      setLocalMsSelectedIds([])
+      setLocalMsTotal(0)
+      setLocalMsPages(1)
+      setLocalMsPage(1)
+      return
+    }
+    const pool = getLocalMsPool()
+    const nextPage = Math.max(Number(targetPage || localMsPage || 1), 1)
+    const nextPageSize = Math.max(Number(targetPageSize || localMsPageSize || 10), 1)
+    setLocalMsListLoading(true)
+    setLocalMsListError('')
+    try {
+      const data = await apiFetch(`/local-microsoft/mailboxes?pool=${encodeURIComponent(pool)}&page=${nextPage}&page_size=${nextPageSize}`)
+      const items = Array.isArray(data?.items) ? data.items : []
+      const total = Math.max(Number(data?.total || 0), 0)
+      const page = Math.max(Number(data?.page || nextPage), 1)
+      const pageSize = Math.max(Number(data?.page_size || nextPageSize), 1)
+      const pages = Math.max(Number(data?.pages || 1), 1)
+      setLocalMsMailboxes(items)
+      setLocalMsTotal(total)
+      setLocalMsPage(page)
+      setLocalMsPageSize(pageSize)
+      setLocalMsPages(pages)
+      setLocalMsSelectedIds(current => current.filter(id => items.some((item: any) => item.id === id)))
+    } catch (error: any) {
+      setLocalMsListError(error?.message || '加载 local_microsoft 邮箱池列表失败')
+    } finally {
+      setLocalMsListLoading(false)
+    }
+  }
+
+
+  const toggleLocalMsRow = (id: number, checked: boolean) => {
+    setLocalMsSelectedIds(current => checked ? (current.includes(id) ? current : [...current, id]) : current.filter(item => item !== id))
+  }
+
+  const toggleLocalMsAllRows = (checked: boolean) => {
+    if (checked) {
+      setLocalMsSelectedIds(localMsMailboxes.map(item => Number(item.id)).filter(Boolean))
+      return
+    }
+    setLocalMsSelectedIds([])
+  }
+
+  const batchDeleteLocalMsMailboxes = async () => {
+    if (localMsSelectedIds.length === 0) {
+      setProviderError(current => ({ ...current, mailbox: '请先选中要删除的邮箱' }))
+      return
+    }
+    setLocalMsBatchDeleting(true)
+    setProviderError(current => ({ ...current, mailbox: '' }))
+    try {
+      await Promise.all(localMsSelectedIds.map(id => apiFetch(`/local-microsoft/mailboxes/${id}`, { method: 'DELETE' })))
+      setProviderNotice(current => ({ ...current, mailbox: `已删除 ${localMsSelectedIds.length} 条邮箱记录` }))
+      setLocalMsSelectedIds([])
+      await Promise.all([refreshLocalMsStats(), refreshLocalMsMailboxes()])
+    } catch (error) {
+      setProviderError(current => ({ ...current, mailbox: getErrorMessage(error, '批量删除 local_microsoft 邮箱失败') }))
+    } finally {
+      setLocalMsBatchDeleting(false)
+    }
+  }
+
+  const batchUpdateLocalMsMailboxes = async () => {
+    if (localMsSelectedIds.length === 0) {
+      setProviderError(current => ({ ...current, mailbox: '请先选中要更新的邮箱' }))
+      return
+    }
+    const cooldownSeconds = Number(localMsBatchCooldown || 0)
+    setLocalMsBatchUpdating(true)
+    setProviderError(current => ({ ...current, mailbox: '' }))
+    try {
+      await Promise.all(localMsSelectedIds.map(id => apiFetch(`/local-microsoft/mailboxes/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: localMsBatchStatus || null,
+          sub_status: localMsBatchSubStatus || null,
+          last_error: localMsBatchLastError || null,
+          cooldown_seconds: Number.isFinite(cooldownSeconds) ? cooldownSeconds : 0,
+          release_lease: true,
+        }),
+      })))
+      setProviderNotice(current => ({ ...current, mailbox: `已更新 ${localMsSelectedIds.length} 条邮箱记录` }))
+      await Promise.all([refreshLocalMsStats(), refreshLocalMsMailboxes()])
+    } catch (error) {
+      setProviderError(current => ({ ...current, mailbox: getErrorMessage(error, '批量更新 local_microsoft 邮箱失败') }))
+    } finally {
+      setLocalMsBatchUpdating(false)
+    }
+  }
+
+  const openLocalMsImport = () => {
+    const pool = getLocalMsPool()
+    setLocalMsImportPool(pool)
+    setLocalMsImportResult('')
+    setLocalMsImportOpen(true)
+  }
+
+  const submitLocalMsImport = async () => {
+    const pool = String(localMsImportPool || 'default').trim() || 'default'
+    const rawText = String(localMsImportPayload || '').trim()
+
+    const lines = rawText.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    const items = lines
+      .map(line => line.split('----').map(part => part.trim()))
+      .filter(parts => parts.length >= 4 && parts[0])
+      .map(parts => ({
+        email: parts[0],
+        password: parts[1] || '',
+        client_id: parts[2] || '',
+        refresh_token: parts[3] || '',
+        fission_enabled: true,
+        status: 'active',
+      }))
+
+    if (!Array.isArray(items) || items.length === 0) {
+      setProviderError(current => ({
+        ...current,
+        mailbox: '导入数据格式无效：仅支持每行“邮箱----密码----client_id----refresh_token”',
+      }))
+      return
+    }
+
+    setLocalMsImporting(true)
+    setProviderError(current => ({ ...current, mailbox: '' }))
+    setLocalMsImportResult('')
+    try {
+      const result = await apiFetch('/local-microsoft/mailboxes/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          pool,
+          replace: localMsImportReplace,
+          items,
+        }),
+      })
+      const created = Number(result?.created || 0)
+      const updated = Number(result?.updated || 0)
+      const summary = `导入完成：新增 ${created}，更新 ${updated}`
+      setLocalMsImportResult(summary)
+      setProviderNotice(current => ({ ...current, mailbox: summary }))
+      setLocalMsImportOpen(false)
+      await Promise.all([refreshLocalMsStats(), refreshLocalMsMailboxes()])
+    } catch (error) {
+      setProviderError(current => ({ ...current, mailbox: getErrorMessage(error, '导入 local_microsoft 邮箱池失败') }))
+    } finally {
+      setLocalMsImporting(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'mailbox') return
+    const hasLocalMs = providerSettings.mailbox.some(item => item.provider_key === 'local_microsoft')
+    if (hasLocalMs) {
+      refreshLocalMsStats()
+      refreshLocalMsMailboxes()
+    } else {
+      setLocalMsStats(null)
+      setLocalMsMailboxes([])
+      setLocalMsSelectedIds([])
+      setLocalMsError('')
+      setLocalMsListError('')
+      setLocalMsTotal(0)
+      setLocalMsPages(1)
+      setLocalMsPage(1)
+    }
+
+  }, [activeTab, providerSettings.mailbox])
+
+
   const save = async () => {
+
     setSaving(true)
     try {
       await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: form }) })
@@ -1097,10 +1417,166 @@ export default function Settings() {
                         </table>
                       </div>
                     )}
+
+                    {providerSettings.mailbox.some(item => item.provider_key === 'local_microsoft') && (
+                      <div className="space-y-4 border-t border-[var(--border)] pt-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Local Microsoft 邮箱池</h3>
+                            <p className="text-xs text-[var(--text-muted)] mt-0.5">已放在邮箱 Provider 列表最底部，支持统计、导入、选中批量更新与删除。</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={openLocalMsImport}>
+                              <Plus className="h-3.5 w-3.5 mr-1" />
+                              导入邮箱池
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => { refreshLocalMsStats(); refreshLocalMsMailboxes(localMsPage, localMsPageSize) }} disabled={localMsListLoading || localMsLoading}>
+                              <RefreshCw className={cn('h-3.5 w-3.5 mr-1', (localMsListLoading || localMsLoading) ? 'animate-spin' : '')} />
+                              刷新统计与列表
+                            </Button>
+                          </div>
+                        </div>
+
+                        {localMsError ? (
+                          <div className="rounded-[16px] border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{localMsError}</div>
+                        ) : null}
+                        {localMsListError ? (
+                          <div className="rounded-[16px] border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{localMsListError}</div>
+                        ) : null}
+
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          <SettingsMetric label="池邮箱总数" value={localMsStats?.total ?? '-'} icon={Mail} />
+                          <SettingsMetric label="总体成功率" value={localMsStats ? `${localMsStats.success_rate || 0}%` : '-'} icon={BarChart3} />
+                          <SettingsMetric label="成功计数" value={localMsStats?.success_count ?? '-'} icon={CheckCircle} />
+                          <SettingsMetric label="失败计数" value={localMsStats?.fail_count ?? '-'} icon={XCircle} />
+                        </div>
+
+                        <div className="rounded-[16px] border border-[var(--border)] bg-[var(--bg-hover)]/55 p-3">
+                          <div className="text-xs text-[var(--text-muted)] mb-2">状态分布</div>
+                          <div className="flex flex-wrap gap-2">
+                            {Object.keys(localMsStats?.status_distribution || {}).length === 0 ? (
+                              <span className="text-xs text-[var(--text-muted)]">暂无数据</span>
+                            ) : Object.entries(localMsStats?.status_distribution || {}).map(([key, value]) => (
+                              <span key={key} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-secondary)]">
+                                {key}: {String(value)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          <div>
+                            <label className="block text-xs text-[var(--text-muted)] mb-1">批量状态</label>
+                            <select value={localMsBatchStatus} onChange={e => setLocalMsBatchStatus(e.target.value)} className="control-surface appearance-none">
+                              <option value="active">active</option>
+                              <option value="cooldown">cooldown</option>
+                              <option value="disabled">disabled</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-[var(--text-muted)] mb-1">批量子状态</label>
+                            <input value={localMsBatchSubStatus} onChange={e => setLocalMsBatchSubStatus(e.target.value)} className="control-surface" placeholder="raw_master" />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-[var(--text-muted)] mb-1">冷却秒数</label>
+                            <input value={localMsBatchCooldown} onChange={e => setLocalMsBatchCooldown(e.target.value)} className="control-surface" placeholder="0" />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-[var(--text-muted)] mb-1">最后错误（可选）</label>
+                            <input value={localMsBatchLastError} onChange={e => setLocalMsBatchLastError(e.target.value)} className="control-surface" placeholder="留空则清空" />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button size="sm" onClick={batchUpdateLocalMsMailboxes} disabled={localMsSelectedIds.length === 0 || localMsBatchUpdating}>
+                            {localMsBatchUpdating ? '更新中...' : `更新选中 (${localMsSelectedIds.length})`}
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={batchDeleteLocalMsMailboxes} disabled={localMsSelectedIds.length === 0 || localMsBatchDeleting}>
+                            {localMsBatchDeleting ? '删除中...' : `删除选中 (${localMsSelectedIds.length})`}
+                          </Button>
+                        </div>
+
+                        <div className="glass-table-wrap rounded-xl border border-[var(--border)]">
+                          <table className="w-full min-w-[1100px] text-sm">
+                            <thead>
+                              <tr className="border-b border-[var(--border)] bg-[var(--bg-hover)] text-xs text-[var(--text-muted)]">
+                                <th className="px-4 py-2 text-left">
+                                  <input
+                                    type="checkbox"
+                                    className="checkbox-accent"
+                                    checked={localMsMailboxes.length > 0 && localMsSelectedIds.length === localMsMailboxes.length}
+                                    onChange={e => toggleLocalMsAllRows(e.target.checked)}
+                                  />
+                                </th>
+                                <th className="px-4 py-2 text-left">邮箱</th>
+                                <th className="px-4 py-2 text-left">状态</th>
+                                <th className="px-4 py-2 text-left">子状态</th>
+                                <th className="px-4 py-2 text-left">成功/失败</th>
+                                <th className="px-4 py-2 text-left">健康分</th>
+                                <th className="px-4 py-2 text-left">更新时间</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {localMsMailboxes.length === 0 ? (
+                                <tr>
+                                  <td className="px-4 py-3 text-[var(--text-muted)]" colSpan={7}>{localMsListLoading ? '加载中...' : '暂无邮箱池数据'}</td>
+                                </tr>
+                              ) : localMsMailboxes.map((item: any) => (
+                                <tr key={item.id} className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-hover)]/60">
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="checkbox"
+                                      className="checkbox-accent"
+                                      checked={localMsSelectedIds.includes(Number(item.id))}
+                                      onChange={e => toggleLocalMsRow(Number(item.id), e.target.checked)}
+                                    />
+                                  </td>
+                                  <td className="px-4 py-2 text-[var(--text-secondary)]">{item.email}</td>
+                                  <td className="px-4 py-2 text-[var(--text-secondary)]">{item.status || '-'}</td>
+                                  <td className="px-4 py-2 text-[var(--text-secondary)]">{item.sub_status || '-'}</td>
+                                  <td className="px-4 py-2 text-[var(--text-secondary)]">{Number(item.success_count || 0)}/{Number(item.fail_count || 0)}</td>
+                                  <td className="px-4 py-2 text-[var(--text-primary)] font-medium">{Number(item.health_score || 0)}</td>
+                                  <td className="px-4 py-2 text-[var(--text-secondary)]">{item.updated_at || '-'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-hover)]/55 px-3 py-2">
+                          <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)] whitespace-nowrap overflow-x-auto">
+                            <span>
+                              共 <span className="font-semibold text-[var(--text-primary)]">{localMsTotal}</span> 个邮箱，
+                              第 <span className="font-semibold text-[var(--text-primary)]">{localMsPage}</span>/<span className="font-semibold text-[var(--text-primary)]">{localMsPages}</span> 页
+                            </span>
+                            <span className="text-[var(--text-muted)]">每页</span>
+                            <select
+                              value={String(localMsPageSize)}
+                              onChange={e => {
+                                const size = Number(e.target.value || 10)
+                                setLocalMsSelectedIds([])
+                                refreshLocalMsMailboxes(1, size)
+                              }}
+                              className="control-surface control-surface-compact appearance-none !w-[120px] shrink-0 text-[var(--text-primary)]"
+                            >
+                              <option value="10">10 条/页</option>
+                              <option value="50">50 条/页</option>
+                              <option value="100">100 条/页</option>
+                              <option value="200">200 条/页</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <Button size="sm" variant="outline" disabled={localMsPage <= 1 || localMsListLoading} onClick={() => refreshLocalMsMailboxes(localMsPage - 1, localMsPageSize)}>上一页</Button>
+                            <Button size="sm" variant="outline" disabled={localMsPage >= localMsPages || localMsListLoading} onClick={() => refreshLocalMsMailboxes(localMsPage + 1, localMsPageSize)}>下一页</Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
               {activeTab === 'captcha' && (
+
                 <>
                   {optionsError && (
                     <div className="rounded-[22px] border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
@@ -1230,8 +1706,23 @@ export default function Settings() {
           )}
         </div>
       </div>
+      {localMsImportOpen && (
+        <LocalMicrosoftImportModal
+          pool={localMsImportPool}
+          setPool={setLocalMsImportPool}
+          replaceMode={localMsImportReplace}
+          setReplaceMode={setLocalMsImportReplace}
+          payload={localMsImportPayload}
+          setPayload={setLocalMsImportPayload}
+          importing={localMsImporting}
+          importResult={localMsImportResult}
+          onClose={() => setLocalMsImportOpen(false)}
+          onSubmit={submitLocalMsImport}
+        />
+      )}
       {providerDialog.providerType && dialogItem && (
         <ProviderDetailModal
+
           title={providerDialog.providerType === 'mailbox' ? '邮箱 Provider 详情' : '验证 Provider 详情'}
           item={dialogItem}
           readOnly={providerDialog.readOnly}

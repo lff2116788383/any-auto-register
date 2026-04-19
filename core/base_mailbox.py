@@ -218,7 +218,805 @@ def _create_laoudo(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _split_email(value: str) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if "@" not in raw:
+        return "", ""
+    local, domain = raw.split("@", 1)
+    return local.strip(), domain.strip().lower()
+
+
+class LocalMicrosoftMailbox(BaseMailbox):
+    """本地微软邮箱（Outlook/Hotmail）provider，支持固定母号与邮箱池模式。"""
+
+    TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    GRAPH_MESSAGES_ENDPOINT = "https://graph.microsoft.com/v1.0/me/messages"
+    DEFAULT_GRAPH_SCOPE = "Mail.Read offline_access openid profile"
+
+
+    def __init__(
+        self,
+        *,
+        master_email: str,
+        client_id: str,
+        refresh_token: str,
+        enable_fission: bool = True,
+        alias_strategy: str = "plus",
+        alias_prefix: str = "aar",
+        alias_length: int = 8,
+        fetch_mode: str = "auto",
+        poll_interval_sec: int = 5,
+        max_wait_sec: int = 180,
+        graph_scope: str = DEFAULT_GRAPH_SCOPE,
+
+        mode: str = "master_fission",
+        pool: str = "default",
+        pool_fission: bool = False,
+        lease_ttl: int = 300,
+        cooldown_on_timeout: int = 0,
+        route_strategy: str = "fair",
+        route_success_rate_weight: float = 0.65,
+        route_freshness_weight: float = 0.25,
+        route_affinity_weight: float = 0.10,
+        alias_strategy_map: str = "",
+        imap_host: str = "outlook.office365.com",
+
+        imap_port: int = 993,
+        imap_ssl: bool = True,
+        imap_folder: str = "INBOX",
+        imap_username: str = "",
+        imap_password: str = "",
+        imap_timeout_sec: int = 20,
+        imap_top_n: int = 30,
+        task_id: str = "",
+        platform_name: str = "",
+        proxy: str | None = None,
+    ):
+
+        self.master_email = str(master_email or "").strip().lower()
+        self.client_id = str(client_id or "").strip()
+        self.refresh_token = str(refresh_token or "").strip()
+        self.enable_fission = bool(enable_fission)
+        self.alias_strategy = str(alias_strategy or "plus").strip().lower()
+        self.alias_prefix = str(alias_prefix or "aar").strip() or "aar"
+        self.alias_length = max(4, int(alias_length or 8))
+        self.fetch_mode = str(fetch_mode or "auto").strip().lower()
+        self.poll_interval_sec = max(2, int(poll_interval_sec or 5))
+        self.max_wait_sec = max(30, int(max_wait_sec or 180))
+        self.graph_scope = self._normalize_graph_scope(graph_scope)
+        self.mode = str(mode or "master_fission").strip().lower()
+
+        self.pool = str(pool or "default").strip() or "default"
+        self.pool_fission = bool(pool_fission)
+        self.lease_ttl = max(30, int(lease_ttl or 300))
+        self.cooldown_on_timeout = max(0, int(cooldown_on_timeout or 0))
+        self.alias_strategy_map = str(alias_strategy_map or "")
+        self.imap_host = str(imap_host or "outlook.office365.com").strip()
+        self.imap_port = max(1, int(imap_port or 993))
+        self.imap_ssl = bool(imap_ssl)
+        self.imap_folder = str(imap_folder or "INBOX").strip() or "INBOX"
+        self.imap_username = str(imap_username or "").strip()
+        self.imap_password = str(imap_password or "").strip()
+        self.imap_timeout_sec = max(5, int(imap_timeout_sec or 20))
+        self.imap_top_n = max(5, int(imap_top_n or 30))
+        self.task_id = str(task_id or "").strip()
+        self.platform_name = str(platform_name or "").strip().lower()
+        self.proxy = {"http": proxy, "https": proxy} if proxy else None
+        self._access_token_cache: dict[str, str] = {}
+
+
+    @staticmethod
+    def _to_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        if not text:
+            return default
+        if text in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if text in {"0", "false", "no", "off", "disabled"}:
+            return False
+        return default
+
+    @staticmethod
+    def _to_int(value, default: int) -> int:
+        try:
+            return int(str(value or "").strip())
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _normalize_graph_scope(value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return LocalMicrosoftMailbox.DEFAULT_GRAPH_SCOPE
+        scopes: list[str] = []
+        seen: set[str] = set()
+        prefix = "https://graph.microsoft.com/"
+        for token in raw.split():
+            item = str(token or "").strip()
+            if not item:
+                continue
+            if item.startswith(prefix):
+                item = item[len(prefix):].strip()
+            if item and item not in seen:
+                scopes.append(item)
+                seen.add(item)
+        return " ".join(scopes) or LocalMicrosoftMailbox.DEFAULT_GRAPH_SCOPE
+
+    @staticmethod
+    def _parse_alias_strategy_map(raw: str) -> dict[str, str]:
+
+        mapping: dict[str, str] = {}
+        text = str(raw or "").strip()
+        if not text:
+            return mapping
+        for token in text.split(","):
+            pair = str(token or "").strip()
+            if not pair or ":" not in pair:
+                continue
+            platform, strategy = pair.split(":", 1)
+            p = str(platform or "").strip().lower()
+            s = str(strategy or "").strip().lower()
+            if p and s:
+                mapping[p] = s
+        return mapping
+
+    def _effective_alias_strategy(self) -> str:
+        mapping = self._parse_alias_strategy_map(self.alias_strategy_map)
+        return str(mapping.get(self.platform_name) or self.alias_strategy or "plus").strip().lower()
+
+    def _generate_email(self, master_email: str, allow_fission: bool, *, alias_strategy: str) -> tuple[str, bool, str]:
+
+        import random
+        import string
+
+        local, domain = _split_email(master_email)
+        if not local or not domain:
+            raise RuntimeError(f"local_microsoft 配置错误：母邮箱无效 {master_email!r}")
+
+        if (not allow_fission) or alias_strategy in {"raw", "raw_only"}:
+            return master_email, False, ""
+
+
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=self.alias_length))
+        alias_tag = f"{self.alias_prefix}{suffix}"
+        alias_email = f"{local}+{alias_tag}@{domain}"
+        return alias_email, True, alias_tag
+
+    def _allocate_pool_source(self) -> dict | None:
+        from infrastructure.local_microsoft_mailboxes_repository import LocalMicrosoftMailboxesRepository
+
+        row = LocalMicrosoftMailboxesRepository().allocate(
+            pool=self.pool,
+            platform=self.platform_name,
+            leased_by_task_id=self.task_id,
+            lease_seconds=self.lease_ttl,
+        )
+
+        if not row:
+            return None
+        return {
+            "mailbox_id": int(row.id or 0),
+            "master_email": str(row.email or "").strip().lower(),
+            "client_id": str(row.client_id or "").strip(),
+            "refresh_token": str(row.refresh_token or "").strip(),
+            "imap_username": str(row.email or "").strip().lower(),
+            "password": str(row.password or "").strip(),
+            "fission_enabled": bool(row.fission_enabled),
+            "pool": str(row.pool or self.pool),
+            "source": "pool",
+        }
+
+
+    def _resolve_source(self) -> dict:
+        if self.mode in {"pool", "hybrid"}:
+            source = self._allocate_pool_source()
+            if source:
+                return source
+            if self.mode == "pool":
+                raise RuntimeError(f"local_microsoft 邮箱池为空或全部不可用: pool={self.pool}")
+
+        if not self.master_email:
+            raise RuntimeError("local_microsoft 缺少 master_email")
+        has_graph = bool(self.client_id and self.refresh_token)
+        has_imap = bool((self.imap_username or self.master_email) and self.imap_password)
+        if not has_graph and not has_imap:
+            raise RuntimeError("local_microsoft 缺少可用凭据（Graph 或 IMAP）")
+
+        return {
+            "mailbox_id": 0,
+            "master_email": self.master_email,
+            "client_id": self.client_id,
+            "refresh_token": self.refresh_token,
+            "imap_username": self.imap_username or self.master_email,
+            "password": self.imap_password,
+            "fission_enabled": bool(self.enable_fission),
+            "pool": self.pool,
+            "source": "master",
+        }
+
+
+    @staticmethod
+    def _sanitize_imap_login(value: str | None) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        match = re.search(r'[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}', raw, re.IGNORECASE)
+        return str(match.group(0) if match else raw)
+
+    def _refresh_graph_access_token(self, *, client_id: str, refresh_token: str, cache_key: str) -> str:
+        import requests
+
+        requested_scopes: list[str] = []
+        for scope in ["https://graph.microsoft.com/.default offline_access", self.graph_scope]:
+            normalized = self._normalize_graph_scope(scope) if scope != "https://graph.microsoft.com/.default offline_access" else scope
+            if normalized and normalized not in requested_scopes:
+                requested_scopes.append(normalized)
+
+        last_error = ""
+        for current_scope in requested_scopes:
+            response = requests.post(
+                self.TOKEN_ENDPOINT,
+                data={
+                    "client_id": client_id,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": current_scope,
+                },
+                proxies=self.proxy,
+                timeout=20,
+            )
+            payload = response.json() if response.content else {}
+            if response.status_code < 400:
+                access_token = str(payload.get("access_token") or "").strip()
+                if not access_token:
+                    raise RuntimeError("local_microsoft token 刷新失败：未返回 access_token")
+                self._access_token_cache[cache_key] = access_token
+                return access_token
+            code = str(payload.get("error") or "")
+            desc = str(payload.get("error_description") or response.text or "")[:300]
+            last_error = f"local_microsoft token 刷新失败: {code or response.status_code} {desc}"
+            error_text = f"{code} {desc}".lower()
+            retryable_scope_error = ("aadsts70000" in error_text) or ("invalid_scope" in error_text)
+            if not retryable_scope_error:
+                break
+
+        raise RuntimeError(last_error or "local_microsoft token 刷新失败")
+
+
+    def _refresh_outlook_imap_access_token(self, *, client_id: str, refresh_token: str, cache_key: str) -> str:
+        import requests
+
+        response = requests.post(
+            self.TOKEN_ENDPOINT,
+            data={
+                "client_id": client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+            },
+            proxies=self.proxy,
+            timeout=20,
+        )
+        payload = response.json() if response.content else {}
+        if response.status_code >= 400:
+            code = str(payload.get("error") or "")
+            desc = str(payload.get("error_description") or response.text or "")[:300]
+            raise RuntimeError(f"local_microsoft IMAP token 刷新失败: {code or response.status_code} {desc}")
+
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("local_microsoft IMAP token 刷新失败：未返回 access_token")
+        self._access_token_cache[cache_key] = access_token
+        return access_token
+
+    def _account_credentials(self, account: MailboxAccount) -> tuple[str, str, str, int, str, str]:
+
+        provider_account = dict((account.extra or {}).get("provider_account") or {})
+        credentials = dict(provider_account.get("credentials") or {})
+        master_email = str(credentials.get("master_email") or "").strip().lower()
+        client_id = str(credentials.get("client_id") or "").strip()
+        refresh_token = str(credentials.get("refresh_token") or "").strip()
+        mailbox_id = self._to_int(credentials.get("mailbox_id"), 0)
+        imap_username = str(credentials.get("imap_username") or "").strip()
+        password = str(credentials.get("password") or "").strip()
+        if not master_email:
+            raise RuntimeError("local_microsoft 账号凭据缺失：master_email")
+        return master_email, client_id, refresh_token, mailbox_id, imap_username, password
+
+
+    def _list_graph_messages(self, account: MailboxAccount) -> list[dict]:
+        import requests
+
+        master_email, client_id, refresh_token, _, _, _ = self._account_credentials(account)
+        if not client_id or not refresh_token:
+            raise RuntimeError("local_microsoft Graph 凭据缺失")
+        cache_key = f"{master_email}:{client_id}"
+        token = self._access_token_cache.get(cache_key)
+        if not token:
+            token = self._refresh_graph_access_token(
+                client_id=client_id,
+                refresh_token=refresh_token,
+                cache_key=cache_key,
+            )
+            self._mark_runtime(account, mark_refresh=True)
+
+        params = {
+            "$top": 25,
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,bodyPreview,body,from,toRecipients,receivedDateTime",
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        response = requests.get(
+            self.GRAPH_MESSAGES_ENDPOINT,
+            params=params,
+            headers=headers,
+            proxies=self.proxy,
+            timeout=20,
+        )
+
+        if response.status_code == 401:
+            token = self._refresh_graph_access_token(
+                client_id=client_id,
+                refresh_token=refresh_token,
+                cache_key=cache_key,
+            )
+            self._mark_runtime(account, mark_refresh=True)
+
+            headers["Authorization"] = f"Bearer {token}"
+            response = requests.get(
+                self.GRAPH_MESSAGES_ENDPOINT,
+                params=params,
+                headers=headers,
+                proxies=self.proxy,
+                timeout=20,
+            )
+
+        payload = response.json() if response.content else {}
+        if response.status_code >= 400:
+            message = str((payload.get("error") or {}).get("message") or response.text or "")[:300]
+            raise RuntimeError(f"local_microsoft 拉取邮件失败: HTTP {response.status_code} {message}")
+        return list(payload.get("value") or [])
+
+    def _list_imap_messages(self, account: MailboxAccount) -> list[dict]:
+        import email
+        import imaplib
+        from email.header import decode_header
+        from email.utils import getaddresses
+        import socket
+
+        master_email, client_id, refresh_token, _, imap_username, _ = self._account_credentials(account)
+        provider_account = dict((account.extra or {}).get("provider_account") or {})
+        username = self._sanitize_imap_login(
+            imap_username or provider_account.get("login_identifier") or master_email
+        )
+
+        if not self.imap_host or not username:
+
+            raise RuntimeError("local_microsoft IMAP 凭据缺失")
+        if not client_id or not refresh_token:
+            raise RuntimeError("local_microsoft IMAP OAuth 凭据缺失")
+
+        socket.setdefaulttimeout(self.imap_timeout_sec)
+        client = None
+        messages: list[dict] = []
+
+        def _decode(value: str) -> str:
+            chunks = decode_header(value or "")
+            text_parts: list[str] = []
+            for part, encoding in chunks:
+                if isinstance(part, bytes):
+                    text_parts.append(part.decode(encoding or "utf-8", errors="ignore"))
+                else:
+                    text_parts.append(str(part or ""))
+            return "".join(text_parts).strip()
+
+        try:
+            access_token = self._refresh_outlook_imap_access_token(
+                client_id=client_id,
+                refresh_token=refresh_token,
+                cache_key=f"imap:{master_email}:{client_id}",
+            )
+            auth_string = f"user={username}\x01auth=Bearer {access_token}\x01\x01"
+            auth_bytes = auth_string.encode("utf-8")
+
+            if self.imap_ssl:
+                client = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            else:
+                client = imaplib.IMAP4(self.imap_host, self.imap_port)
+            client.authenticate("XOAUTH2", lambda _: auth_bytes)
+
+            folders: list[str] = []
+            primary_folder = str(self.imap_folder or "INBOX").strip() or "INBOX"
+            for folder in [primary_folder, "Junk", '"Junk Email"', "Spam", '"垃圾邮件"']:
+                normalized = str(folder or "").strip()
+                if normalized and normalized not in folders:
+                    folders.append(normalized)
+
+            seen_ids: set[str] = set()
+            for folder in folders:
+                status, _ = client.select(folder)
+                if status != "OK":
+                    continue
+                status, data = client.search(None, "ALL")
+                if status != "OK":
+                    continue
+                ids = [item for item in (data[0] or b"").split() if item][-self.imap_top_n:]
+                for raw_id in reversed(ids):
+                    status, content = client.fetch(raw_id, "(RFC822)")
+                    if status != "OK" or not content:
+                        continue
+                    for item in content:
+                        if not isinstance(item, tuple) or len(item) < 2:
+                            continue
+                        raw_bytes = item[1]
+                        if not raw_bytes:
+                            continue
+                        msg = email.message_from_bytes(raw_bytes)
+                        subject = _decode(msg.get("Subject", ""))
+                        message_id = str(msg.get("Message-ID") or raw_id.decode(errors="ignore") or "").strip()
+                        if not message_id or message_id in seen_ids:
+                            continue
+                        seen_ids.add(message_id)
+                        recipients = [addr.strip().lower() for _, addr in getaddresses([msg.get("To", "")]) if addr]
+
+                        body_parts: list[str] = []
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                ctype = str(part.get_content_type() or "").lower()
+                                if ctype not in {"text/plain", "text/html"}:
+                                    continue
+                                payload = part.get_payload(decode=True)
+                                if payload is None:
+                                    continue
+                                charset = part.get_content_charset() or "utf-8"
+                                body_parts.append(payload.decode(charset, errors="ignore"))
+                        else:
+                            payload = msg.get_payload(decode=True)
+                            if payload is not None:
+                                charset = msg.get_content_charset() or "utf-8"
+                                body_parts.append(payload.decode(charset, errors="ignore"))
+
+                        body_text = "\n".join(body_parts).strip()
+                        messages.append(
+                            {
+                                "id": message_id,
+                                "subject": subject,
+                                "bodyPreview": body_text[:240],
+                                "body": {"content": body_text},
+                                "toRecipients": [
+                                    {"emailAddress": {"address": addr}}
+                                    for addr in recipients
+                                ],
+                            }
+                        )
+            return messages
+        finally:
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+
+
+
+
+    def _list_messages(self, account: MailboxAccount) -> list[dict]:
+        mode = str(self.fetch_mode or "auto").strip().lower()
+        if mode == "graph":
+            return self._list_graph_messages(account)
+        if mode == "imap":
+            return self._list_imap_messages(account)
+
+        try:
+            return self._list_graph_messages(account)
+        except Exception as graph_exc:
+            try:
+                return self._list_imap_messages(account)
+            except Exception as imap_exc:
+                raise RuntimeError(
+                    f"local_microsoft 自动收件失败: graph={str(graph_exc)[:120]} | imap={str(imap_exc)[:120]}"
+                ) from imap_exc
+
+    @staticmethod
+    def _extract_recipients(message: dict) -> set[str]:
+
+        recipients = set()
+        for item in list(message.get("toRecipients") or []):
+            address = str(((item or {}).get("emailAddress") or {}).get("address") or "").strip().lower()
+            if address:
+                recipients.add(address)
+        return recipients
+
+    @staticmethod
+    def _message_text(message: dict) -> str:
+        subject = str(message.get("subject") or "")
+        preview = str(message.get("bodyPreview") or "")
+        body_content = str(((message.get("body") or {}).get("content")) or "")
+        return f"{subject} {preview} {body_content}"
+
+    def _matches_alias(self, message: dict, account: MailboxAccount) -> bool:
+        recipients = self._extract_recipients(message)
+        if not recipients:
+            return True
+        current = str(account.email or "").strip().lower()
+        if current in recipients:
+            return True
+        master_email, _, _, _, _, _ = self._account_credentials(account)
+
+        return master_email in recipients and current == master_email
+
+    def _handle_service_abuse_mode(self, account: MailboxAccount, message: str) -> bool:
+        text = str(message or "")
+        if "aadsts70000" not in text.lower() or "service abuse mode" not in text.lower():
+            return False
+        self._mark_runtime(
+            account,
+            status="dead",
+            sub_status="service_abuse_mode",
+            last_error=text[:300],
+            release_lease=True,
+        )
+        return True
+
+    def _mark_runtime(self, account: MailboxAccount, *, status: str | None = None,
+                      sub_status: str | None = None, last_error: str | None = None,
+                      cooldown_seconds: int = 0, release_lease: bool = False,
+                      increment_fission: bool = False, mark_refresh: bool = False,
+                      mark_success: bool = False) -> None:
+        provider_account = dict((account.extra or {}).get("provider_account") or {})
+        credentials = dict(provider_account.get("credentials") or {})
+        mailbox_id = self._to_int(credentials.get("mailbox_id"), 0)
+        if mailbox_id <= 0:
+            return
+        from infrastructure.local_microsoft_mailboxes_repository import LocalMicrosoftMailboxesRepository
+
+        LocalMicrosoftMailboxesRepository().mark_runtime(
+            mailbox_id,
+            status=status,
+            sub_status=sub_status,
+            last_error=last_error,
+            cooldown_seconds=cooldown_seconds,
+            release_lease=release_lease,
+            increment_fission=increment_fission,
+            mark_refresh=mark_refresh,
+            mark_success=mark_success,
+        )
+
+
+    def get_email(self) -> MailboxAccount:
+        source = self._resolve_source()
+        allow_fission = bool(source["fission_enabled"]) if source["source"] == "master" else bool(source["fission_enabled"] and self.pool_fission)
+        effective_alias_strategy = self._effective_alias_strategy()
+        email, is_alias, alias_tag = self._generate_email(
+            source["master_email"],
+            allow_fission,
+            alias_strategy=effective_alias_strategy,
+        )
+        resource_id = f"{source['master_email']}:{alias_tag or 'raw'}"
+        provider_name = "local_microsoft"
+
+
+        account = MailboxAccount(
+            email=email,
+            account_id=resource_id,
+            extra={
+                "provider_account": {
+                    "provider_type": "mailbox",
+                    "provider_name": provider_name,
+                    "login_identifier": source["master_email"],
+                    "display_name": source["master_email"],
+                    "credentials": {
+                        "client_id": source["client_id"],
+                        "refresh_token": source["refresh_token"],
+                        "master_email": source["master_email"],
+                        "imap_username": source.get("imap_username", ""),
+                        "password": source.get("password", ""),
+                        "mailbox_id": source["mailbox_id"],
+                    },
+                    "metadata": {
+                        "fetch_mode": self.fetch_mode,
+                        "alias_strategy": effective_alias_strategy,
+                        "alias_strategy_map": self.alias_strategy_map,
+                        "platform": self.platform_name,
+                        "is_alias": is_alias,
+
+                        "alias_tag": alias_tag,
+                        "source": source["source"],
+                        "pool": source["pool"],
+                    },
+                },
+                "provider_resource": {
+                    "provider_type": "mailbox",
+                    "provider_name": provider_name,
+                    "resource_type": "mailbox",
+                    "resource_identifier": resource_id,
+                    "handle": email,
+                    "display_name": email,
+                    "metadata": {
+                        "master_email": source["master_email"],
+                        "is_alias": is_alias,
+                        "alias_tag": alias_tag,
+                        "fetch_mode": self.fetch_mode,
+                        "source": source["source"],
+                        "pool": source["pool"],
+                        "mailbox_id": source["mailbox_id"],
+                    },
+                },
+            },
+        )
+        if is_alias:
+            self._mark_runtime(account, increment_fission=True)
+        return account
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        try:
+            messages = self._list_messages(account)
+            return {
+                str(message.get("id") or "").strip()
+                for message in messages
+                if str(message.get("id") or "").strip() and self._matches_alias(message, account)
+            }
+        except Exception:
+            return set()
+
+
+    def wait_for_code(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None,
+                      code_pattern: str = None) -> str:
+        import re
+        import time
+
+        wait_timeout = min(max(int(timeout or 0), 1), self.max_wait_sec)
+        seen = set(before_ids or [])
+        start = time.time()
+        pattern = re.compile(code_pattern) if code_pattern else re.compile(r'(?<!#)(?<!\d)(\d{6})(?!\d)')
+
+        try:
+            while time.time() - start < wait_timeout:
+                messages = self._list_messages(account)
+                for message in messages:
+
+                    mid = str(message.get("id") or "").strip()
+                    if not mid or mid in seen:
+                        continue
+                    seen.add(mid)
+                    if not self._matches_alias(message, account):
+                        continue
+
+                    text = self._message_text(message)
+                    if keyword and keyword.lower() not in text.lower():
+                        continue
+                    matched = pattern.search(text)
+                    if matched:
+                        self._mark_runtime(account, status="active", last_error="", mark_success=True, release_lease=True)
+                        return matched.group(1) if matched.groups() else matched.group(0)
+                time.sleep(self.poll_interval_sec)
+        except Exception as exc:
+            handled = self._handle_service_abuse_mode(account, str(exc))
+            if not handled:
+                self._mark_runtime(account, status="active", last_error=str(exc)[:300], release_lease=True)
+            raise
+
+
+
+        self._mark_runtime(
+            account,
+            status="cooldown" if self.cooldown_on_timeout > 0 else "active",
+            sub_status="mail_timeout",
+            last_error=f"等待验证码超时 ({wait_timeout}s)",
+            cooldown_seconds=self.cooldown_on_timeout,
+            release_lease=True,
+        )
+        raise TimeoutError(f"等待验证码超时 ({wait_timeout}s)")
+
+    def wait_for_link(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None) -> str:
+        import time
+
+        wait_timeout = min(max(int(timeout or 0), 1), self.max_wait_sec)
+        seen = set(before_ids or [])
+        start = time.time()
+
+        try:
+            while time.time() - start < wait_timeout:
+                messages = self._list_messages(account)
+                for message in messages:
+
+                    mid = str(message.get("id") or "").strip()
+                    if not mid or mid in seen:
+                        continue
+                    seen.add(mid)
+                    if not self._matches_alias(message, account):
+                        continue
+
+                    link = _extract_verification_link(self._message_text(message), keyword)
+                    if link:
+                        self._mark_runtime(account, status="active", last_error="", mark_success=True, release_lease=True)
+                        return link
+                time.sleep(self.poll_interval_sec)
+        except Exception as exc:
+            handled = self._handle_service_abuse_mode(account, str(exc))
+            if not handled:
+                self._mark_runtime(account, status="active", last_error=str(exc)[:300], release_lease=True)
+            raise
+
+
+
+        self._mark_runtime(
+            account,
+            status="cooldown" if self.cooldown_on_timeout > 0 else "active",
+            sub_status="mail_timeout",
+            last_error=f"等待验证链接超时 ({wait_timeout}s)",
+            cooldown_seconds=self.cooldown_on_timeout,
+            release_lease=True,
+        )
+        raise TimeoutError(f"等待验证链接超时 ({wait_timeout}s)")
+
+
+def _create_local_microsoft(extra: dict, proxy: str | None) -> 'BaseMailbox':
+
+    def _bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        if not text:
+            return default
+        return text in {"1", "true", "yes", "on", "enabled"}
+
+    def _int(value, default):
+        try:
+            return int(str(value or "").strip())
+        except Exception:
+            return int(default)
+
+    return LocalMicrosoftMailbox(
+        master_email=extra.get("local_ms_master_email", ""),
+        client_id=extra.get("local_ms_client_id", ""),
+        refresh_token=extra.get("local_ms_refresh_token", ""),
+        enable_fission=_bool(extra.get("local_ms_enable_fission", "true"), True),
+        alias_strategy=extra.get("local_ms_alias_strategy", "plus"),
+        alias_prefix=extra.get("local_ms_alias_prefix", "aar"),
+        alias_length=_int(extra.get("local_ms_alias_length", 8), 8),
+        fetch_mode=extra.get("local_ms_fetch_mode", "auto"),
+        poll_interval_sec=_int(extra.get("local_ms_poll_interval_sec", 5), 5),
+        max_wait_sec=_int(extra.get("local_ms_max_wait_sec", 180), 180),
+        graph_scope=extra.get("local_ms_graph_scope", LocalMicrosoftMailbox.DEFAULT_GRAPH_SCOPE),
+
+        mode=extra.get("local_ms_mode", "pool"),
+        pool=extra.get("local_ms_pool", "default"),
+        pool_fission=_bool(extra.get("local_ms_pool_fission", "false"), False),
+        lease_ttl=_int(extra.get("local_ms_lease_ttl", 300), 300),
+        cooldown_on_timeout=_int(extra.get("local_ms_cooldown_on_timeout", 0), 0),
+        route_strategy=extra.get("local_ms_route_strategy", "fair"),
+        route_success_rate_weight=float(extra.get("local_ms_route_success_rate_weight", 0.65) or 0.65),
+        route_freshness_weight=float(extra.get("local_ms_route_freshness_weight", 0.25) or 0.25),
+        route_affinity_weight=float(extra.get("local_ms_route_affinity_weight", 0.10) or 0.10),
+        alias_strategy_map=extra.get("local_ms_alias_strategy_map", ""),
+
+        imap_host=extra.get("local_ms_imap_host", "outlook.office365.com"),
+        imap_port=_int(extra.get("local_ms_imap_port", 993), 993),
+        imap_ssl=_bool(extra.get("local_ms_imap_ssl", "true"), True),
+        imap_folder=extra.get("local_ms_imap_folder", "INBOX"),
+        imap_username=extra.get("local_ms_imap_username", ""),
+        imap_password=extra.get("local_ms_imap_password", ""),
+        imap_timeout_sec=_int(extra.get("local_ms_imap_timeout_sec", 20), 20),
+        imap_top_n=_int(extra.get("local_ms_imap_top_n", 30), 30),
+        task_id=extra.get("local_ms_task_id", ""),
+        platform_name=extra.get("local_ms_platform", ""),
+        proxy=proxy,
+    )
+
+
+
+
+
 MAILBOX_FACTORY_REGISTRY = {
+
     "tempmail_lol_api": _create_tempmail,
     "tempmail_web_api": _create_tempmail_web,
     "duckmail_api": _create_duckmail,
@@ -227,8 +1025,11 @@ MAILBOX_FACTORY_REGISTRY = {
     "cfworker_admin_api": _create_cfworker,
     "testmail_api": _create_testmail,
     "laoudo_api": _create_laoudo,
+    "localmicrosoftoauth": _create_local_microsoft,
+    "local_microsoft_oauth": _create_local_microsoft,
     # backward-compat fallback
     "tempmail_lol": _create_tempmail,
+
     "tempmail_web": _create_tempmail_web,
     "duckmail": _create_duckmail,
     "freemail": _create_freemail,
@@ -236,7 +1037,9 @@ MAILBOX_FACTORY_REGISTRY = {
     "cfworker": _create_cfworker,
     "testmail": _create_testmail,
     "laoudo": _create_laoudo,
+    "local_microsoft": _create_local_microsoft,
 }
+
 
 
 def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'BaseMailbox':
@@ -252,7 +1055,31 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
     definition = definitions_repo.get_by_key("mailbox", provider_key)
     if not definition or not definition.enabled:
         raise RuntimeError(f"邮箱 provider 不存在或未启用: {provider_key}")
-    base_extra = dict(extra or {})
+
+    def _sanitize_override_values(payload: dict[str, object], *, current_provider_key: str) -> dict[str, object]:
+        placeholder_values: dict[str, set[str]] = {
+            "local_microsoft": {
+                "yourname@outlook.com",
+                "00000000-0000-0000-0000-000000000000",
+            },
+        }
+        ignored_values = placeholder_values.get(str(current_provider_key or "").strip(), set())
+        cleaned: dict[str, object] = {}
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, str):
+                text = value.strip()
+                if text == "":
+                    continue
+                if text in ignored_values:
+                    continue
+            cleaned[key] = value
+        return cleaned
+
+    base_extra = _sanitize_override_values(dict(extra or {}), current_provider_key=provider_key)
+
+
 
     raw_fallbacks = base_extra.get("mail_provider_fallbacks")
     explicit_fallbacks: list[str] = []
@@ -261,16 +1088,11 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
     elif isinstance(raw_fallbacks, (list, tuple, set)):
         explicit_fallbacks = [str(item or "").strip() for item in raw_fallbacks if str(item or "").strip()]
 
-    enabled_items = settings_repo.list_enabled("mailbox")
-    enabled_keys = [str(item.provider_key or "").strip() for item in enabled_items if str(item.provider_key or "").strip()]
     ordered_keys: list[str] = [provider_key]
     for key in explicit_fallbacks:
         if key not in ordered_keys:
             ordered_keys.append(key)
-    for key in enabled_keys:
-        if key == provider_key or key == "laoudo" or key in ordered_keys:
-            continue
-        ordered_keys.append(key)
+
 
     providers: list[tuple[str, BaseMailbox]] = []
     for key in ordered_keys:

@@ -12,6 +12,7 @@ from api.actions import router as actions_router
 from api.config import router as config_router
 from api.health import router as health_router
 from api.lifecycle import router as lifecycle_router
+from api.local_microsoft_mailboxes import router as local_microsoft_mailboxes_router
 from api.platform_capabilities import router as platform_capabilities_router
 from api.platforms import router as platforms_router
 from api.provider_definitions import router as provider_definitions_router
@@ -67,6 +68,7 @@ app.include_router(actions_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(lifecycle_router, prefix="/api")
+app.include_router(local_microsoft_mailboxes_router, prefix="/api")
 app.include_router(platforms_router, prefix="/api")
 app.include_router(platform_capabilities_router, prefix="/api")
 app.include_router(provider_definitions_router, prefix="/api")

@@ -5,16 +5,58 @@ These are pure functions that don't need a browser or network.
 from __future__ import annotations
 
 from platforms.chatgpt.browser_register import (
+    BROWSER_BOOTSTRAP_URLS,
     _build_proxy_config,
     _extract_code_from_url,
     _infer_page_type,
     _extract_flow_state,
     _normalize_url,
+    _start_browser_signup,
     _decode_jwt_payload,
 )
 
 
-class TestBuildProxyConfig:
+
+
+
+class TestBrowserSignupStart:
+    def test_start_browser_signup_uses_auth_authorize_continue(self, monkeypatch):
+        import json as _json
+        import platforms.chatgpt.browser_register as mod
+
+        captured: dict[str, object] = {}
+
+        class FakePage:
+            url = "https://auth.openai.com/create-account"
+
+        def fake_sentinel(page, device_id, flow, user_agent):
+            captured["flow"] = flow
+            return "sentinel-token"
+
+        def fake_fetch(page, url, *, method="GET", headers=None, body=None, redirect="manual", timeout_ms=30000):
+            captured["url"] = url
+            captured["method"] = method
+            captured["headers"] = dict(headers or {})
+            captured["body"] = _json.loads(body or "{}")
+            return {"ok": True, "status": 200, "url": url, "data": {"page": {"type": "create_account_password"}}}
+
+        monkeypatch.setattr(mod, "_build_browser_sentinel_token", fake_sentinel)
+        monkeypatch.setattr(mod, "_browser_fetch", fake_fetch)
+        monkeypatch.setattr(mod, "_browser_pause", lambda page: None)
+
+        result = _start_browser_signup(FakePage(), "demo@hotmail.com", "device-id", "ua", lambda _msg: None)
+
+        assert result["ok"] is True
+        assert captured["url"] == "https://auth.openai.com/api/accounts/authorize/continue"
+        assert captured["method"] == "POST"
+        assert captured["flow"] == "authorize_continue"
+        assert captured["headers"]["openai-sentinel-token"] == "sentinel-token"
+        assert captured["body"] == {
+            "username": {"value": "demo@hotmail.com", "kind": "email"},
+            "screen_hint": "signup",
+        }
+
+
     def test_none_input(self):
         assert _build_proxy_config(None) is None
 

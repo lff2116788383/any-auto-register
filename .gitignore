@@ -1,22 +1,43 @@
 # Python
 .venv/
+venv/
+env/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+*.so
 .Python
 *.egg-info/
+.eggs/
+pip-wheel-metadata/
 dist/
 build/
+
+# 测试与覆盖率
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.pyre/
+.hypothesis/
 
 # 数据库
 *.db
 *.sqlite
+*.sqlite3
 *.db.*.bak
 
-# 日志
+# 日志与运行时文件
 logs/
 *.log
+*.pid
+*.pid.lock
+*.out
+*.err
 
 # 账号数据
 accounts.txt
@@ -26,11 +47,15 @@ account.txt
 # 前端
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
+frontend/.cache/
+frontend/coverage/
 
 # Electron
 electron/node_modules/
 electron/dist/
 electron/backend/
+electron/out/
 
 # PyInstaller
 backend.spec
@@ -42,6 +67,7 @@ data/
 # 环境变量
 .env
 .env.local
+.env.*.local
 
 # 文档
 docs/
@@ -49,10 +75,15 @@ docs/
 # macOS
 .DS_Store
 
+# Windows
+Thumbs.db
+Desktop.ini
+
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
 .ace-tool/
 
 # AI 工具
@@ -61,3 +92,8 @@ AGENTS.md
 
 # 敏感文件
 *.har
+
+# 本地临时文件
+*.tmp
+*.temp
+*.bak

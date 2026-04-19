@@ -290,20 +290,22 @@ def append_task_event(task_id: str, message: str, *, event_type: str = "log", le
 
 
 def mark_incomplete_tasks_interrupted() -> None:
+    task_ids: list[str] = []
     with Session(engine) as session:
         tasks = session.exec(
             select(TaskModel).where(TaskModel.status.in_(list(ACTIVE_TASK_STATUSES)))
         ).all()
         for task in tasks:
+            task_ids.append(task.id)
             task.status = TASK_STATUS_INTERRUPTED
             task.error = task.error or "任务在服务重启后被中断"
             task.finished_at = _utcnow()
             task.updated_at = _utcnow()
             session.add(task)
         session.commit()
-    for task in tasks:
+    for task_id in task_ids:
         append_task_event(
-            task.id,
+            task_id,
             "任务在服务重启后被标记为中断",
             event_type="state",
             level="warning",
@@ -616,17 +618,31 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if not extra.get("mail_provider"):
                 from infrastructure.provider_settings_repository import ProviderSettingsRepository
                 extra["mail_provider"] = ProviderSettingsRepository().get_default_provider_key("mailbox")
+            extra["local_ms_task_id"] = logger.task_id
+            extra["local_ms_platform"] = platform_name
             shared_mailbox = create_mailbox(
                 provider=extra.get("mail_provider", ""),
                 extra=extra,
                 proxy=proxy or None,
             )
+
     except Exception as exc:
         logger.log(f"邮箱初始化失败: {exc}", level="error")
         logger.finish(TASK_STATUS_FAILED, error=f"邮箱初始化失败: {exc}")
         return
 
+    def _release_local_ms_task_leases() -> None:
+        try:
+            from infrastructure.local_microsoft_mailboxes_repository import LocalMicrosoftMailboxesRepository
+
+            released = LocalMicrosoftMailboxesRepository().release_by_task(logger.task_id)
+            if released > 0:
+                logger.log(f"已回收 local_microsoft 租约: {released}")
+        except Exception as exc:
+            logger.log(f"回收 local_microsoft 租约失败: {exc}", level="warning")
+
     def _do_one(index: int) -> bool | str:
+
         if logger.is_cancel_requested():
             return "__cancel_requested__"
         resolved_proxy = proxy or proxy_pool.get_next()
@@ -688,16 +704,22 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     except Exception as exc:
         logger.log(f"致命错误: {exc}", level="error")
         logger.finish(TASK_STATUS_FAILED, error=str(exc))
+        _release_local_ms_task_leases()
         return
 
     summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
+
     logger.log(summary, event_type="summary")
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        _release_local_ms_task_leases()
         return
+
     final_status = TASK_STATUS_FAILED if errors and success == 0 else TASK_STATUS_SUCCEEDED
     final_error = "" if final_status == TASK_STATUS_SUCCEEDED else errors[0]
     logger.finish(final_status, error=final_error)
+    _release_local_ms_task_leases()
+
 
 
 def _execute_platform_action_task(payload: dict[str, Any], logger: TaskLogger) -> None:

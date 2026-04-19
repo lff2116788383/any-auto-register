@@ -22,6 +22,51 @@
     },
     {
       "provider_type": "mailbox",
+      "provider_key": "local_microsoft",
+      "driver_type": "localmicrosoftoauth",
+      "label": "Local Microsoft Mailbox",
+      "description": "本地微软邮箱（Outlook/Hotmail）协议族。使用 refresh token + Graph API 拉取邮件，支持 plus alias 裂变。",
+      "default_auth_mode": "oauth_refresh_token",
+      "auth_modes": [
+        { "value": "oauth_refresh_token", "label": "Refresh Token" }
+      ],
+      "fields": [
+        { "key": "local_ms_mode", "label": "模式", "placeholder": "master_fission / pool / hybrid", "default_value": "pool", "category": "identity" },
+        { "key": "local_ms_pool", "label": "邮箱池名称", "placeholder": "default", "default_value": "default", "category": "identity" },
+        { "key": "local_ms_pool_fission", "label": "池模式启用 alias", "placeholder": "false", "default_value": "false", "category": "identity" },
+        { "key": "local_ms_master_email", "label": "母邮箱（非 pool 兜底）", "placeholder": "yourname@outlook.com", "category": "identity" },
+        { "key": "local_ms_client_id", "label": "Client ID（非 pool 兜底）", "placeholder": "00000000-0000-0000-0000-000000000000", "category": "auth" },
+        { "key": "local_ms_refresh_token", "label": "Refresh Token（非 pool 兜底）", "secret": true, "category": "auth" },
+        { "key": "local_ms_enable_fission", "label": "启用 alias 裂变", "placeholder": "true", "default_value": "true", "category": "identity" },
+        { "key": "local_ms_alias_strategy", "label": "别名策略", "placeholder": "plus / raw_only", "default_value": "plus", "category": "identity" },
+        { "key": "local_ms_alias_strategy_map", "label": "平台别名策略映射", "placeholder": "chatgpt:plus,cursor:raw_only", "default_value": "", "category": "identity" },
+        { "key": "local_ms_alias_prefix", "label": "别名前缀", "placeholder": "aar", "default_value": "aar", "category": "identity" },
+        { "key": "local_ms_alias_length", "label": "别名随机长度", "placeholder": "8", "default_value": "8", "category": "identity" },
+        { "key": "local_ms_fetch_mode", "label": "收件模式", "placeholder": "auto / graph / imap", "default_value": "auto", "category": "connection" },
+        { "key": "local_ms_poll_interval_sec", "label": "轮询间隔(秒)", "placeholder": "5", "default_value": "5", "category": "connection" },
+        { "key": "local_ms_max_wait_sec", "label": "最大等待(秒)", "placeholder": "180", "default_value": "180", "category": "connection" },
+        { "key": "local_ms_lease_ttl", "label": "租约秒数", "placeholder": "300", "default_value": "300", "category": "connection" },
+        { "key": "local_ms_cooldown_on_timeout", "label": "超时冷却秒数", "placeholder": "0", "default_value": "0", "category": "connection" },
+        { "key": "local_ms_route_strategy", "label": "路由策略", "placeholder": "fair / score", "default_value": "fair", "category": "connection" },
+        { "key": "local_ms_route_success_rate_weight", "label": "成功率权重", "placeholder": "0.65", "default_value": "0.65", "category": "connection" },
+        { "key": "local_ms_route_freshness_weight", "label": "新鲜度权重", "placeholder": "0.25", "default_value": "0.25", "category": "connection" },
+        { "key": "local_ms_route_affinity_weight", "label": "平台亲和权重", "placeholder": "0.10", "default_value": "0.10", "category": "connection" },
+        { "key": "local_ms_imap_host", "label": "IMAP Host", "placeholder": "outlook.office365.com", "default_value": "outlook.office365.com", "category": "connection" },
+
+        { "key": "local_ms_imap_port", "label": "IMAP Port", "placeholder": "993", "default_value": "993", "category": "connection" },
+        { "key": "local_ms_imap_ssl", "label": "IMAP SSL", "placeholder": "true", "default_value": "true", "category": "connection" },
+        { "key": "local_ms_imap_folder", "label": "IMAP Folder", "placeholder": "INBOX", "default_value": "INBOX", "category": "connection" },
+        { "key": "local_ms_imap_username", "label": "IMAP 用户名（母号模式可选）", "placeholder": "yourname@outlook.com", "default_value": "", "category": "auth" },
+        { "key": "local_ms_imap_password", "label": "IMAP 密码（母号模式可选）", "secret": true, "category": "auth" },
+        { "key": "local_ms_imap_timeout_sec", "label": "IMAP 超时(秒)", "placeholder": "20", "default_value": "20", "category": "connection" },
+        { "key": "local_ms_imap_top_n", "label": "IMAP 扫描邮件数", "placeholder": "30", "default_value": "30", "category": "connection" },
+        { "key": "local_ms_graph_scope", "label": "Graph Scope", "placeholder": "Mail.Read offline_access openid profile", "default_value": "Mail.Read offline_access openid profile", "category": "auth" }
+
+
+      ]
+    },
+    {
+      "provider_type": "mailbox",
       "provider_key": "tempmail_lol",
       "driver_type": "tempmail_lol_api",
       "label": "TempMail.lol API",
@@ -32,6 +77,7 @@
       ],
       "fields": []
     },
+
     {
       "provider_type": "mailbox",
       "provider_key": "tempmail_web",

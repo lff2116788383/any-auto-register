@@ -125,7 +125,7 @@ class GrokBrowserRegister:
             else:
                 self.log("未检测到姓名或密码输入框，保存截图到 /tmp/grok_debug.png")
                 page.screenshot(path="/tmp/grok_debug.png")
-                with open("/tmp/grok_debug.html", "w") as f:
+                with open("/tmp/grok_debug.html", "w", encoding="utf-8") as f:
                     f.write(page.content())
 
             # DEBUG SCREENSHOT
@@ -177,7 +177,7 @@ class GrokBrowserRegister:
             if not sso:
                 self.log("未获取到 sso cookie，保存截图到 /tmp/grok_fail_final.png")
                 page.screenshot(path="/tmp/grok_fail_final.png")
-                with open("/tmp/grok_fail_final.html", "w") as f:
+                with open("/tmp/grok_fail_final.html", "w", encoding="utf-8") as f:
                     f.write(page.content())
                 raise RuntimeError("未获取到 Grok sso cookie")
             sso_rw = _get_cookies(page, ["sso-rw"]).get("sso-rw", "")

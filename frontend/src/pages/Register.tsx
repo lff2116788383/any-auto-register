@@ -42,6 +42,13 @@ function getDefaultProviderKey(settings: ProviderSetting[] = []) {
   return settings.find(item => item.is_default)?.provider_key || settings[0]?.provider_key || ''
 }
 
+function isMeaningfulProviderValue(value: unknown) {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  return true
+}
+
+
 export default function Register() {
   const [form, setForm] = useState<Record<string, any>>(DEFAULT_FORM)
   const [platforms, setPlatforms] = useState<any[]>([])
@@ -218,7 +225,7 @@ export default function Register() {
       extra.mail_provider = form.mail_provider
     }
     allProviderFieldKeys.forEach(fieldKey => {
-      if (form[fieldKey] !== undefined) {
+      if (isMeaningfulProviderValue(form[fieldKey])) {
         extra[fieldKey] = form[fieldKey]
       }
     })

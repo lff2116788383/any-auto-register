@@ -299,7 +299,43 @@ class ProxyModel(SQLModel, table=True):
     last_checked: Optional[datetime] = None
 
 
+class LocalMicrosoftMailboxModel(SQLModel, table=True):
+    __tablename__ = "local_microsoft_mailboxes"
+    __table_args__ = (
+        UniqueConstraint("pool", "email", name="uq_local_microsoft_mailboxes_pool_email"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pool: str = Field(default="default", index=True)
+    email: str = Field(index=True)
+    password: str = ""
+    client_id: str = ""
+    refresh_token: str = ""
+    status: str = Field(default="active", index=True)
+    sub_status: str = Field(default="raw_master", index=True)
+    fission_enabled: bool = True
+    fission_count: int = 0
+    last_used_at: Optional[datetime] = None
+    last_refresh_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    last_error: str = ""
+    cooldown_until: Optional[datetime] = None
+    leased_by_task_id: str = ""
+    leased_until: Optional[datetime] = None
+    current_platform: str = ""
+    metadata_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+    def get_metadata(self) -> dict:
+        return json.loads(self.metadata_json or "{}")
+
+    def set_metadata(self, data: dict):
+        self.metadata_json = json.dumps(data or {}, ensure_ascii=False)
+
+
 def save_account(account) -> 'AccountModel':
+
     """从 base_platform.Account 存入数据库（同平台同邮箱则更新）"""
     from core.account_graph import sync_platform_account_graph
 
