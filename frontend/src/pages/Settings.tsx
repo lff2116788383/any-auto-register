@@ -67,7 +67,7 @@ function LocalMicrosoftImportModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
             <h2 className="text-base font-semibold text-[var(--text-primary)]">导入 Local Microsoft 邮箱池</h2>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">仅支持每行“邮箱----密码----client_id----refresh_token”格式，一键写入邮箱池。</p>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">仅支持每行“邮箱----密码----client_id----refresh_token”格式；粘贴真实内容即可增量更新，同邮箱会自动覆盖。</p>
           </div>
           <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
@@ -99,13 +99,19 @@ function LocalMicrosoftImportModal({
           </div>
           <div>
             <label className="block text-sm text-[var(--text-secondary)] font-medium mb-2">导入内容（每行一个账号）</label>
-            <textarea
-              value={payload}
-              onChange={e => setPayload(e.target.value)}
-              rows={12}
-              className="control-surface control-surface-mono resize-none"
-              placeholder={"yourname@outlook.com----yourPassword----00000000-0000-0000-0000-000000000000----<refresh_token>\nsecond@outlook.com----pass2----00000000-0000-0000-0000-000000000000----<refresh_token2>"}
-            />
+            <div className="relative">
+              {!payload.trim() ? (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-[var(--text-muted)]">
+                  格式示例：email@example.com----password----client_id----refresh_token
+                </div>
+              ) : null}
+              <textarea
+                value={payload}
+                onChange={e => setPayload(e.target.value)}
+                rows={12}
+                className="control-surface control-surface-mono resize-none relative bg-transparent"
+              />
+            </div>
           </div>
           {importResult ? (
             <div className="rounded-[14px] border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
@@ -699,7 +705,7 @@ export default function Settings() {
   const [localMsImportOpen, setLocalMsImportOpen] = useState(false)
 
   const [localMsImportPool, setLocalMsImportPool] = useState('default')
-  const [localMsImportPayload, setLocalMsImportPayload] = useState('yourname@outlook.com----yourPassword----00000000-0000-0000-0000-000000000000----<refresh_token>')
+  const [localMsImportPayload, setLocalMsImportPayload] = useState('')
 
   const [localMsImportReplace, setLocalMsImportReplace] = useState(false)
   const [localMsImporting, setLocalMsImporting] = useState(false)
@@ -877,6 +883,7 @@ export default function Settings() {
   const openLocalMsImport = () => {
     const pool = getLocalMsPool()
     setLocalMsImportPool(pool)
+    setLocalMsImportPayload('')
     setLocalMsImportResult('')
     setLocalMsImportOpen(true)
   }
