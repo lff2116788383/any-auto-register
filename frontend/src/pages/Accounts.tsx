@@ -1273,7 +1273,9 @@ function ExportMenu({
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const doExport = async (format: 'json' | 'csv' | 'cpa' | 'sub2api') => {
+  type ExportFormat = 'json' | 'csv' | 'cpa' | 'sub2api' | 'kiro-go' | 'any2api'
+
+  const doExport = async (format: ExportFormat) => {
     setLoading(format)
     try {
       const { blob, filename } = await apiDownload(`/accounts/export/${format}`, {
@@ -1295,12 +1297,20 @@ function ExportMenu({
     }
   }
 
-  const options = [
-    { key: 'json', label: '导出 JSON' },
-    { key: 'csv', label: '导出 CSV' },
-    { key: 'cpa', label: '导出 CPA' },
-    { key: 'sub2api', label: '导出 Sub2Api' },
-  ] as const
+  const options: Array<{ key: ExportFormat; label: string }> = platform === 'chatgpt'
+    ? [
+        { key: 'json', label: '导出 JSON' },
+        { key: 'csv', label: '导出 CSV' },
+        { key: 'cpa', label: '导出 CPA' },
+        { key: 'sub2api', label: '导出 Sub2Api' },
+      ]
+    : platform === 'kiro'
+      ? [
+          { key: 'kiro-go', label: '导出 Kiro-Go JSON' },
+          { key: 'any2api', label: '导出 Any2API JSON' },
+          { key: 'csv', label: '导出 CSV' },
+        ]
+      : []
 
   return (
     <div className="relative" ref={menuRef}>
@@ -1507,7 +1517,7 @@ export default function Accounts() {
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 导入
               </Button>
-              {tab === 'chatgpt' ? (
+              {tab === 'chatgpt' || tab === 'kiro' ? (
                 <ExportMenu
                   platform={tab}
                   total={total}

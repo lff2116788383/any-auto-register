@@ -315,6 +315,17 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
       ],
     }],
   },
+  {
+    id: 'any2api', label: 'Any2API', icon: Shield,
+    sections: [{
+      section: '自动推送',
+      desc: '注册完成后自动推送账号到 Any2API 管理后台。',
+      items: [
+        { key: 'any2api_url', label: 'API URL', placeholder: 'http://127.0.0.1:8099' },
+        { key: 'any2api_password', label: 'Admin Password', secret: true },
+      ],
+    }],
+  },
 ]
 
 function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions }: any) {
