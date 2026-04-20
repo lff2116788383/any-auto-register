@@ -319,8 +319,9 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
     id: 'any2api', label: 'Any2API', icon: Shield,
     sections: [{
       section: '自动推送',
-      desc: '注册完成后自动推送账号到 Any2API 管理后台。',
+      desc: '可选开启注册完成后自动推送账号到 Any2API 管理后台；默认关闭，只有开关开启且配置完整时才会推送。',
       items: [
+        { key: 'any2api_auto_push', label: '启用自动推送', type: 'checkbox' },
         { key: 'any2api_url', label: 'API URL', placeholder: 'http://127.0.0.1:8099' },
         { key: 'any2api_password', label: 'Admin Password', secret: true },
       ],
@@ -329,10 +330,29 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
 ]
 
 function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions }: any) {
-  const { key, label, placeholder, secret } = field
+  const { key, label, placeholder, secret, type } = field
   const options = (field.options && field.options.length > 0)
     ? field.options
     : ((selectOptions && selectOptions.length > 0) ? selectOptions : null)
+  if (type === 'checkbox') {
+    const checked = String(form[key] || 'false').toLowerCase() === 'true'
+    return (
+      <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5 last:border-0">
+        <label className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
+        <div className="col-span-2">
+          <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.checked ? 'true' : 'false' }))}
+              className="checkbox-accent"
+            />
+            <span>{checked ? '已开启' : '已关闭'}</span>
+          </label>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5 last:border-0">
       <label className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
@@ -358,6 +378,7 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
               <button
                 onClick={() => setShowSecret((s: any) => ({ ...s, [key]: !s[key] }))}
                 className="absolute right-3 top-2.5 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+
               >
                 {showSecret[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>

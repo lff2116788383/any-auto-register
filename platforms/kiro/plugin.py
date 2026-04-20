@@ -140,8 +140,10 @@ class KiroPlatform(BasePlatform):
         return [
             {"id": "switch_account", "label": "切换到桌面应用", "params": []},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
+            {"id": "test_account", "label": "测试账号", "params": []},
             {"id": "get_account_state", "label": "查询账号状态/额度提示", "params": []},
         ]
+
 
     def get_desktop_state(self) -> dict:
         from platforms.kiro.switch import get_kiro_desktop_state
@@ -252,6 +254,73 @@ class KiroPlatform(BasePlatform):
                 }
             return {"ok": False, "error": result.get("error", "刷新失败")}
 
+        elif action_id == "test_account":
+            from platforms.kiro.switch import (
+                get_kiro_portal_state,
+                probe_kiro_model_access,
+                read_current_kiro_account,
+                refresh_kiro_token,
+                summarize_kiro_usage,
+                get_kiro_desktop_state,
+            )
+
+            refresh_token = extra.get("refreshToken", "")
+            client_id = extra.get("clientId", "")
+            client_secret = extra.get("clientSecret", "")
+            session_token = extra.get("sessionToken", "")
+            profile_arn = extra.get("profileArn", "")
+            current = read_current_kiro_account() or {}
+            refresh_state = {"ok": False, "message": "当前账号未提供 refreshToken/clientId/clientSecret，无法执行远端刷新校验"}
+            access_token = extra.get("accessToken", "") or account.token
+            if refresh_token and client_id and client_secret:
+                ok, result = refresh_kiro_token(refresh_token, client_id, client_secret)
+                if ok:
+                    access_token = result["accessToken"]
+                    refresh_state = {"ok": True, "expiresIn": result.get("expiresIn", 0)}
+                else:
+                    refresh_state = {"ok": False, "message": result.get("error", "刷新失败")}
+            portal_state = get_kiro_portal_state(access_token, session_token, profile_arn=profile_arn) or {}
+            usage_summary = summarize_kiro_usage(portal_state)
+            model_probe = probe_kiro_model_access(
+                access_token,
+                session_token,
+                profile_arn=profile_arn,
+                preferred_model="Claude Sonnet 4.5",
+            )
+            conclusion = "账号可用，模型权限正常" if model_probe.get("ok") else (
+                model_probe.get("error") or "账号测试未通过"
+            )
+            return {
+                "ok": True,
+                "data": {
+                    "message": conclusion,
+                    "access_token": access_token,
+                    "accessToken": access_token,
+                    "remote_validation": refresh_state,
+                    "model_probe": model_probe,
+                    "risk_suspected": bool(model_probe.get("risk_suspected")),
+                    "portal_user": portal_state.get("user_info", {}),
+                    "usage_limits": portal_state.get("usage_limits", {}),
+                    "available_subscription_plans": portal_state.get("available_subscription_plans", {}),
+                    "usage_summary": usage_summary,
+                    "portal_session": {
+                        "has_session_token": bool(session_token),
+                        "user_id": portal_state.get("user_id", ""),
+                        "profile_arn": portal_state.get("profile_arn", profile_arn),
+                        "available": portal_state.get("available", False),
+                        "error": portal_state.get("error", ""),
+                    },
+                    "local_app_account": {
+                        "provider": current.get("provider", ""),
+                        "authMethod": current.get("authMethod", ""),
+                        "accessTokenPreview": _mask_secret(current.get("accessToken", "")),
+                        "matches_target": _kiro_local_matches_target(current, access_token, refresh_token),
+                    },
+                    "desktop_app_state": get_kiro_desktop_state(),
+                    "quota_note": "测试账号会主动探测模型列表，并默认检查 Claude Sonnet 4.5；若返回 403，会明确标记为疑似风控 / 模型权限不可用。",
+                },
+            }
+
         elif action_id == "get_account_state":
             from platforms.kiro.switch import (
                 get_kiro_portal_state,
@@ -305,5 +374,6 @@ class KiroPlatform(BasePlatform):
                     "quota_note": "Kiro 可通过 Web Portal 查询订阅、试用与 credits 用量，但依赖 sessionToken 浏览器会话；若缺少会话则只能返回 token 刷新校验结果。",
                 },
             }
+
 
         raise NotImplementedError(f"未知操作: {action_id}")

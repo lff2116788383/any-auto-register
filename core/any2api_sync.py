@@ -157,15 +157,16 @@ class Any2ApiClient:
         return result is not None
 
 
-def _get_any2api_config() -> tuple[str, str]:
-    """从全局配置读取 Any2API 地址和密码。"""
+def _get_any2api_config() -> tuple[bool, str, str]:
+    """从全局配置读取 Any2API 自动推送开关、地址和密码。"""
     try:
         from core.config_store import config_store
+        enabled = str(config_store.get("any2api_auto_push", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
         base_url = config_store.get("any2api_url", "")
         password = config_store.get("any2api_password", "")
-        return base_url, password
+        return enabled, base_url, password
     except Exception:
-        return "", ""
+        return False, "", ""
 
 
 def push_account_to_any2api(account: Any, *, log_fn=None) -> bool:
@@ -179,9 +180,13 @@ def push_account_to_any2api(account: Any, *, log_fn=None) -> bool:
         True if pushed successfully, False otherwise (including when not configured)
     """
     log = log_fn or logger.info
-    base_url, password = _get_any2api_config()
-    if not base_url:
-        return False  # Not configured, silently skip
+    enabled, base_url, password = _get_any2api_config()
+    if not enabled:
+        return False
+    if not base_url or not password:
+        log("  [Any2API] 已开启自动推送，但未完整配置 URL 或密码，已跳过")
+        return False
+
 
     platform = getattr(account, "platform", "")
     email = getattr(account, "email", "")

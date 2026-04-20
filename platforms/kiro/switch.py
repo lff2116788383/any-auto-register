@@ -453,6 +453,10 @@ def read_current_kiro_account() -> dict | None:
         return None
 
 
+
+
+
+
 def get_kiro_desktop_state() -> dict:
     token_path = os.path.join(_get_cache_dir(), "kiro-auth-token.json")
     current = read_current_kiro_account() or {}
@@ -470,3 +474,123 @@ def get_kiro_desktop_state() -> dict:
     )
     state["available"] = True
     return state
+
+
+def probe_kiro_model_access(
+    access_token: str,
+    session_token: str = "",
+    *,
+    profile_arn: str = "",
+    preferred_model: str = "Claude Sonnet 4.5",
+) -> dict:
+    """主动探测 Kiro 模型能力，优先判断是否能拿到模型列表与默认模型。"""
+    actual_profile_arn = profile_arn or DEFAULT_PROFILE_ARN
+    result = {
+        "ok": False,
+        "preferred_model": preferred_model,
+        "preferred_model_available": False,
+        "available_models": [],
+        "available": False,
+        "profile_arn": actual_profile_arn,
+        "status_code": None,
+        "error": "",
+        "risk_suspected": False,
+        "reason": "",
+    }
+    if not access_token:
+        result["error"] = "缺少 accessToken"
+        result["reason"] = "missing_access_token"
+        return result
+
+    user_id = _fetch_kiro_portal_user_id(access_token, session_token) if session_token else ""
+    if not user_id:
+        result["error"] = "缺少有效 sessionToken 或无法解析 UserId，无法发起模型列表探测"
+        result["reason"] = "missing_portal_session"
+        return result
+
+    operations = [
+        ("ListAvailableModels", {"origin": "KIRO_IDE", "profileArn": actual_profile_arn}),
+        ("GetAvailableModels", {"origin": "KIRO_IDE", "profileArn": actual_profile_arn}),
+    ]
+
+    for operation, body in operations:
+        try:
+            response = cffi_requests.post(
+                f"https://app.kiro.dev/service/KiroWebPortalService/operation/{operation}",
+                headers=_kiro_portal_headers(access_token),
+                cookies={
+                    "AccessToken": access_token,
+                    "SessionToken": session_token,
+                    "Idp": "BuilderId",
+                    "UserId": user_id,
+                },
+                data=cbor2.dumps(body),
+                impersonate="chrome124",
+                timeout=20,
+            )
+        except Exception as e:
+            result["error"] = f"{operation} 请求异常: {e}"
+            result["reason"] = "request_exception"
+            continue
+
+        result["status_code"] = response.status_code
+        if response.status_code == 200:
+            payload = {}
+            try:
+                payload = _serialize_kiro_portal_value(cbor2.loads(response.content))
+            except Exception:
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = {}
+            models = []
+            candidate_lists = []
+            if isinstance(payload, dict):
+                candidate_lists.extend([
+                    payload.get("models"),
+                    payload.get("availableModels"),
+                    payload.get("modelSummaries"),
+                    payload.get("items"),
+                ])
+            for candidate in candidate_lists:
+                if isinstance(candidate, list):
+                    models = candidate
+                    break
+            normalized = []
+            for item in models:
+                if isinstance(item, dict):
+                    name = item.get("displayName") or item.get("name") or item.get("modelName") or item.get("id") or ""
+                else:
+                    name = str(item or "")
+                if name:
+                    normalized.append(name)
+            preferred_available = any(preferred_model.lower() in name.lower() for name in normalized)
+            result.update({
+                "ok": True,
+                "available": True,
+                "available_models": normalized,
+                "preferred_model_available": preferred_available,
+                "error": "",
+                "reason": "ok",
+            })
+            return result
+
+        error_text = _extract_error_text(response)
+        result["error"] = error_text or f"{operation} 返回 HTTP {response.status_code}"
+        if response.status_code == 403:
+            low = (result["error"] or "").lower()
+            suspended = "temporarilysuspended" in low or "temporarily_suspended" in low or "accessdeniedexception" in low
+            result.update({
+                "risk_suspected": True,
+                "available": False,
+                "reason": "model_access_denied",
+                "error": "账号疑似风控 / 模型权限不可用" + (f"：{result['error']}" if result["error"] else ""),
+            })
+            if suspended:
+                result["reason"] = "temporarily_suspended"
+            return result
+
+        result["reason"] = f"http_{response.status_code}"
+
+    return result
+

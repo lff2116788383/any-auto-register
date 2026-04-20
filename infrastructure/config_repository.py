@@ -11,8 +11,9 @@ class ConfigRepository:
         "chrome_user_data_dir", "chrome_cdp_url",
         "cpa_api_url", "cpa_api_key",
         "team_manager_url", "team_manager_key",
-        "any2api_url", "any2api_password",
+        "any2api_auto_push", "any2api_url", "any2api_password",
     }
+
 
     def __init__(self, definitions: ProviderDefinitionsRepository | None = None):
         self.definitions = definitions or ProviderDefinitionsRepository()

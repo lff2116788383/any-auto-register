@@ -50,15 +50,26 @@ class TestAny2ApiClient:
 
 
 class TestPushAccountToAny2api:
-    def test_not_configured_returns_false(self):
-        # When any2api_url is not configured, should silently return False
-        with patch("core.any2api_sync._get_any2api_config", return_value=("", "")):
+    def test_auto_push_disabled_returns_false(self):
+        with patch("core.any2api_sync._get_any2api_config", return_value=(False, "http://localhost:8099", "changeme")):
             account = MagicMock()
             account.platform = "kiro"
             assert push_account_to_any2api(account) is False
 
+    def test_missing_url_or_password_returns_false(self):
+        with patch("core.any2api_sync._get_any2api_config", return_value=(True, "http://localhost:8099", "")):
+            account = MagicMock()
+            account.platform = "kiro"
+            account.email = "test@test.com"
+            account.token = "access-token"
+            account.extra = {"accessToken": "access-token"}
+
+            logs = []
+            assert push_account_to_any2api(account, log_fn=logs.append) is False
+            assert any("未完整配置 URL 或密码" in line for line in logs)
+
     def test_kiro_push(self):
-        with patch("core.any2api_sync._get_any2api_config", return_value=("http://localhost:8099", "changeme")):
+        with patch("core.any2api_sync._get_any2api_config", return_value=(True, "http://localhost:8099", "changeme")):
             account = MagicMock()
             account.platform = "kiro"
             account.email = "test@test.com"
@@ -69,7 +80,7 @@ class TestPushAccountToAny2api:
                 assert push_account_to_any2api(account) is True
 
     def test_unsupported_platform(self):
-        with patch("core.any2api_sync._get_any2api_config", return_value=("http://localhost:8099", "changeme")):
+        with patch("core.any2api_sync._get_any2api_config", return_value=(True, "http://localhost:8099", "changeme")):
             account = MagicMock()
             account.platform = "cerebras"
             account.email = "test@test.com"
@@ -77,3 +88,4 @@ class TestPushAccountToAny2api:
 
             logs = []
             assert push_account_to_any2api(account, log_fn=logs.append) is False
+
