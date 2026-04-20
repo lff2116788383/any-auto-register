@@ -36,4 +36,6 @@ class CursorProtocolMailboxWorker:
         auth_code = self.client.step4_submit_otp(otp, email, state_encoded)
         self.log("Step5: 获取 Token...")
         token = self.client.step5_get_token(auth_code, state_encoded)
+        if not token:
+            raise RuntimeError("注册完成但未获取到 Token")
         return {"email": email, "password": use_password, "token": token}
