@@ -1,5 +1,12 @@
+import mimetypes
 import os
 from contextlib import asynccontextmanager
+
+# 修复 Windows 上 .js 文件 MIME 类型被识别为 text/plain 的问题
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/wasm", ".wasm")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
