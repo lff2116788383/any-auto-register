@@ -38,7 +38,7 @@ class KiroProtocolMailboxWorker:
             raise RuntimeError("未获取到workflowID")
         tes = self.client.step5_get_tes_token()
         if not tes:
-            self.client.log("  ⚠️ TES token获取失败, 继续...")
+            self.client.log("  [WARN] TES token获取失败, 继续...")
         if not self.client.step6_profile_load():
             raise RuntimeError("profile start失败")
         if self.client.step7_send_otp(email) is None:
@@ -60,6 +60,7 @@ class KiroProtocolMailboxWorker:
             raise RuntimeError("create-identity失败")
         reg_code = identity["registrationCode"]
         sign_in_state = identity["signInState"]
+        self.client._signup_signin_state = sign_in_state
 
         signup_registration = self.client.step9_signup_registration(reg_code, sign_in_state)
         if not signup_registration:
@@ -70,17 +71,23 @@ class KiroProtocolMailboxWorker:
 
         login_result = self.client.step11_final_login(email, password_state)
         if not login_result:
-            self.client.log("  ⚠️ 最终登录步骤失败, 但账号可能已创建成功")
+            self.client.log("  [WARN] 最终登录步骤失败, 账号可能已创建成功")
+            self.client.log("  [WARN] Step11 未完成，跳过 Step12 token 获取以避免 invalid_auth_step")
+            return {"email": email, "password": use_password, "name": name}
+
+        if not getattr(self.client, "_step11_state", None) or not getattr(self.client, "_workflow_result_handle", None):
+            self.client.log("  [WARN] Step11 缺少最新 state/workflowResultHandle，跳过 Step12 token 获取")
+            return {"email": email, "password": use_password, "name": name}
 
         tokens = self.client.step12_get_tokens()
         if not tokens:
-            self.client.log("🎉 注册完成! (但 token 获取失败, 账号可用)")
+            self.client.log("[OK] 注册完成! (但 token 获取失败, 账号可用)")
             return {"email": email, "password": use_password, "name": name}
 
         bearer_token = tokens["sessionToken"]
         device_tokens = self.client.step12f_device_auth(bearer_token)
         if device_tokens:
-            self.client.log("🎉 注册完成! (含 accessToken + sessionToken + refreshToken)")
+            self.client.log("[OK] 注册完成! (含 accessToken + sessionToken + refreshToken)")
             return {
                 "email": email,
                 "password": use_password,
@@ -92,7 +99,7 @@ class KiroProtocolMailboxWorker:
                 "refreshToken": device_tokens["refreshToken"],
             }
 
-        self.client.log("🎉 注册完成! (含 accessToken + sessionToken, 但 refreshToken 获取失败)")
+        self.client.log("[OK] 注册完成! (含 accessToken + sessionToken, 但 refreshToken 获取失败)")
         return {
             "email": email,
             "password": use_password,

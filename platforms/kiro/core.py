@@ -232,8 +232,12 @@ class KiroRegister:
         self._portal_csrf_token=None   # portal.sso/login 返回的 csrfToken
         self._orchestrator_id=None     # step 2 redirect chain 中的 orchestrator_id
         self._callback_url=None        # step 2 redirect chain 中的 callback_url
-        self._workflow_result_handle=None  # step 10 redirect URL 中的 workflowResultHandle
+        self._step10_workflow_result_handle=None  # step 10 redirect URL 中的 workflowResultHandle
+        self._step11_workflow_result_handle=None  # step 11 redirect URL 中的 workflowResultHandle
+        self._workflow_result_handle=None  # 当前选中的 workflowResultHandle（兼容旧逻辑）
+        self._step10_state=None        # step 10 redirect URL 中的 state
         self._step11_state=None        # step 11 redirect URL 中的 state
+        self._signup_signin_state=None # step 8 create-identity 返回的 signInState 原文
 
     def log(self,msg): print(f"[{self.tag}] {msg}")
 
@@ -301,7 +305,7 @@ class KiroRegister:
         if dir_entry:
             dir_csrf_path = dir_entry[1] or dir_csrf_path
         if not wf_csrf_val or not dir_csrf_val:
-            self.log(f"  ⚠️ _update_directory_csrf: wf={wf_csrf_val is not None} dir={dir_csrf_val is not None}")
+            self.log(f"  [WARN] _update_directory_csrf: wf={wf_csrf_val is not None} dir={dir_csrf_val is not None}")
             return
         try:
             wf_decoded = json.loads(url_unquote(wf_csrf_val))
@@ -323,7 +327,7 @@ class KiroRegister:
             elif signup_token:
                 self.log(f"  ★ directory-csrf-token 已有 signupCsrfToken, 跳过")
         except Exception as e:
-            self.log(f"  ⚠️ 更新 directory-csrf-token 失败: {e}")
+            self.log(f"  [WARN] 更新 directory-csrf-token 失败: {e}")
 
     def _gen_signin_fwcim(self):
         """生成 signin.aws 页面的真实 FWCIM fingerprint."""
@@ -356,12 +360,12 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         self._capture_cookies(r)
         if r.status_code!=200:
-            self.log(f"  ❌ {r.status_code}: {r.text[:500]}"); return None
+            self.log(f"  [FAIL] {r.status_code}: {r.text[:500]}"); return None
         try: d=r.json()
-        except: self.log(f"  ❌ 非JSON: {r.text[:300]}"); return None
+        except: self.log(f"  [FAIL] 非JSON: {r.text[:300]}"); return None
         if d.get("workflowStateHandle"): self.wsh=d["workflowStateHandle"]
         if d.get("stepId") is not None: self.sid=d["stepId"]
-        self.log(f"  → sid={self.sid} wsh={str(self.wsh)[:40]}...")
+        self.log(f"  -> sid={self.sid} wsh={str(self.wsh)[:40]}...")
         self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
         return d
 
@@ -413,7 +417,7 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         self._capture_cookies(r)
         if r.status_code not in(200,201):
-            self.log(f"  ❌ {r.status_code}: {r.text[:500]}"); return None
+            self.log(f"  [FAIL] {r.status_code}: {r.text[:500]}"); return None
         try:
             d=r.json()
             self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
@@ -434,12 +438,12 @@ class KiroRegister:
               "os/macOS lang/js md/browser#Chromium_131 m/N,M,E"}
         r=self.s.post(f"{KIRO}/service/KiroWebPortalService/operation/InitiateLogin",
             headers=h,data=body,cookies={"kiro-visitor-id":self.vid})
-        if r.status_code!=200: self.log(f"  ❌ {r.status_code}"); return None
+        if r.status_code!=200: self.log(f"  [FAIL] {r.status_code}"); return None
         try: d=cbor2.loads(r.content)
         except: d=r.json()
         redir=d.get("redirectUrl")
-        if not redir: self.log(f"  ❌ 无redirectUrl: {d}"); return None
-        self.log(f"  ✅ {redir[:100]}...")
+        if not redir: self.log(f"  [FAIL] 无redirectUrl: {d}"); return None
+        self.log(f"  [OK] {redir[:100]}...")
         return redir
 
     # ═══ Step 2: oidc → view → portal.sso → wsh ═══
@@ -452,7 +456,34 @@ class KiroRegister:
         fqs=parse_qs(p.fragment.lstrip("#/?")) if p.fragment else {}
         oid=(qs.get("orchestrator_id") or fqs.get("orchestrator_id",[None]))[0]
         cb=(qs.get("callback_url") or fqs.get("callback_url",[None]))[0]
-        if not oid: self.log("  ❌ 无orchestrator_id"); return False
+
+        direct_wsh = (qs.get("workflowStateHandle") or fqs.get("workflowStateHandle", [None]))[0]
+        if direct_wsh and not oid:
+            self.wsh=direct_wsh
+            self._login_wsh=direct_wsh
+            self.log(f"  ★ 检测到直达 login workflowStateHandle={direct_wsh}")
+            self._capture_cookies(r)
+            pu=(f"https://portal.sso.us-east-1.amazonaws.com/login"
+                f"?directory_id=view&redirect_url={url_quote(view_url)}")
+            self.log("  2b fallback portal.sso (CORS mode)...")
+            r2=self.s.get(pu,headers={**UA,"accept":"*/*",
+                "origin":"https://view.awsapps.com",
+                "referer":"https://view.awsapps.com/",
+                "sec-fetch-site":"cross-site","sec-fetch-mode":"cors",
+                "sec-fetch-dest":"empty"},allow_redirects=False)
+            self.log(f"  fallback Status: {r2.status_code}")
+            try:
+                d=r2.json()
+                csrf=d.get("csrfToken")
+                if csrf:
+                    self._portal_csrf_token=str(csrf)
+                    self.log(f"  ★ fallback portal csrfToken={self._portal_csrf_token}")
+            except Exception as e:
+                self.log(f"  [WARN] fallback portal.sso: {e}")
+            self._setup_signin_js_cookies()
+            return True
+
+        if not oid: self.log("  [FAIL] 无orchestrator_id"); return False
         # ★ 保存 orchestrator_id 和 callback_url (Step 12 需要)
         self._orchestrator_id=oid
         self._callback_url=cb
@@ -478,7 +509,7 @@ class KiroRegister:
                 self.log(f"  ★ portal csrfToken={self._portal_csrf_token}")
             m=re.search(r"workflowStateHandle=([^&#]+)",redir)
             if m:
-                self.wsh=m.group(1); self.log(f"  ✅ wsh={self.wsh}")
+                self.wsh=m.group(1); self.log(f"  [OK] wsh={self.wsh}")
                 self._login_wsh=self.wsh
                 r3=self.s.get(redir,headers={**UA,"accept":"text/html",
                     "referer":"https://portal.sso.us-east-1.amazonaws.com/"},
@@ -487,7 +518,7 @@ class KiroRegister:
                 # ★ v10: 首次加载 login 页面后只设置 JS 生成的 platform-ubid
                 self._setup_signin_js_cookies()
                 return True
-        except Exception as e: self.log(f"  ❌ portal.sso: {e}")
+        except Exception as e: self.log(f"  [FAIL] portal.sso: {e}")
         return False
 
     # ═══ Step 3: signin.aws → SIGNUP ═══
@@ -497,14 +528,14 @@ class KiroRegister:
         usr_i={"input_type":"UserRequestInput","username":email}
         self.log("  3a: init (stepId='')...")
         if not self._exec("",inputs=[fp_i]): return None
-        self.log("  3b: start → get-identity-user...")
+        self.log("  3b: start -> get-identity-user...")
         if not self._exec("start",inputs=[fp_i]): return None
         self.log("  3c: SIGNUP...")
         r=self._exec("get-identity-user",inputs=[usr_i,fp_i],action_id="SIGNUP")
         if not r: return None
         redir=r.get("redirect",{}).get("url")
         if redir:
-            self.log(f"  ✅ signup redirect: {redir[:100]}...")
+            self.log(f"  [OK] signup redirect: {redir[:100]}...")
             m=re.search(r"workflowStateHandle=([^&#]+)",redir)
             if m: self.wsh=m.group(1)
         return r
@@ -524,7 +555,7 @@ class KiroRegister:
         if not r: return None
         redir=r.get("redirect",{}).get("url","")
         if "profile.aws" in redir:
-            self.log(f"  ✅ profile redirect: {redir[:100]}...")
+            self.log(f"  [OK] profile redirect: {redir[:100]}...")
             m=re.search(r"workflowID=([^&#]+)",redir)
             if m:
                 self.profile_wf_id=m.group(1)
@@ -553,14 +584,14 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         if r.status_code==200:
             d=r.json(); token=d.get("token","")
-            self.log(f"  ✅ awsd2c-token: {token[:60]}...")
+            self.log(f"  [OK] awsd2c-token: {token[:60]}...")
             self._awsd2c_token=token
             try:
                 parts=token.split(".")
                 pb=parts[1]+"="*(4-len(parts[1])%4)
                 jp=json.loads(base64.urlsafe_b64decode(pb))
                 self._tes_visitor_id=jp.get("vid")
-                self.log(f"  ✅ visitorId: {self._tes_visitor_id}")
+                self.log(f"  [OK] visitorId: {self._tes_visitor_id}")
             except: pass
             self.s.cookies.set("awsd2c-token",token,
                 domain=".aws.amazon.com",path="/")
@@ -570,13 +601,13 @@ class KiroRegister:
             self.s.cookies.set("awsd2c-token-c",token,
                 domain="us-east-1.signin.aws",path="/")
             return token
-        self.log(f"  ❌ {r.status_code}: {r.text[:300]}"); return None
+        self.log(f"  [FAIL] {r.status_code}: {r.text[:300]}"); return None
 
     # ═══ Step 6: profile.aws 页面加载 + /api/start ═══
     def step6_profile_load(self):
         self.log("Step 6: profile.aws 页面加载...")
         if not self.profile_wf_id:
-            self.log("  ❌ 无workflowID"); return None
+            self.log("  [FAIL] 无workflowID"); return None
         self._setup_profile_cookies()
         self.log("  6a: GET profile 页面...")
         r=self.s.get(f"{PROFILE}?workflowID={self.profile_wf_id}",
@@ -603,7 +634,7 @@ class KiroRegister:
         r=self._profile_post("/api/start",payload)
         if r and r.get("workflowState"):
             self.profile_wf_state=r["workflowState"]
-            self.log(f"  ✅ workflowState: {self.profile_wf_state}")
+            self.log(f"  [OK] workflowState: {self.profile_wf_state}")
         return r
 
     # ═══ Step 7: send-otp ═══
@@ -632,9 +663,9 @@ class KiroRegister:
         reg_code = r.get("registrationCode")
         sign_in_state = r.get("signInState")
         if not reg_code or not sign_in_state:
-            self.log(f"  ❌ 缺少 registrationCode 或 signInState")
+            self.log(f"  [FAIL] 缺少 registrationCode 或 signInState")
             return None
-        self.log(f"  ✅ registrationCode: {reg_code[:40]}...")
+        self.log(f"  [OK] registrationCode: {reg_code[:40]}...")
         try:
             padded = sign_in_state + "=" * (4 - len(sign_in_state) % 4)
             decoded = json.loads(base64.b64decode(padded))
@@ -717,15 +748,15 @@ class KiroRegister:
         self._capture_cookies(r)
 
         if r.status_code != 200:
-            self.log(f"  ❌ {r.status_code}: {r.text[:500]}")
+            self.log(f"  [FAIL] {r.status_code}: {r.text[:500]}")
             return None
         d = r.json()
-        self.log(f"  → sid={d.get('stepId')} wsh={d.get('workflowStateHandle','')[:40]}")
+        self.log(f"  -> sid={d.get('stepId')} wsh={d.get('workflowStateHandle','')[:40]}")
         self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
         if d.get("stepId") != "get-new-password-for-password-creation":
-            self.log(f"  ❌ 预期 get-new-password, 实际 {d.get('stepId')}")
+            self.log(f"  [FAIL] 预期 get-new-password, 实际 {d.get('stepId')}")
             return None
-        self.log("  ✅ 进入密码设置步骤")
+        self.log("  [OK] 进入密码设置步骤")
         self._signup_reg_url = signup_url
         return d
 
@@ -737,7 +768,7 @@ class KiroRegister:
                    .get("encryptionContextResponse", {}))
         pub_key = enc_ctx.get("publicKey")
         if not pub_key:
-            self.log("  ❌ 无公钥, 无法加密密码")
+            self.log("  [FAIL] 无公钥, 无法加密密码")
             return None
         self.log(f"  公钥 kid: {pub_key.get('kid')}")
 
@@ -791,7 +822,7 @@ class KiroRegister:
 
         # 10b: JWE 加密密码并提交
         jwe_password = encrypt_password_jwe(pwd, pub_key)
-        self.log(f"  ✅ JWE 加密完成, 长度={len(jwe_password)}")
+        self.log(f"  [OK] JWE 加密完成, 长度={len(jwe_password)}")
         req_id = _uuid()
         fwcim3 = self._gen_signin_fwcim()
         fp_i2 = {"input_type": "FingerPrintRequestInput", "fingerPrint": fwcim3}
@@ -863,22 +894,29 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         self._capture_cookies(r)
         if r.status_code != 200:
-            self.log(f"  ❌ {r.status_code}: {r.text[:500]}")
+            self.log(f"  [FAIL] {r.status_code}: {r.text[:500]}")
             return None
         d = r.json()
-        self.log(f"  → sid={d.get('stepId')}")
+        self.log(f"  -> sid={d.get('stepId')}")
         self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
         if d.get("stepId") != "end-of-user-registration-success":
-            self.log(f"  ❌ 预期 end-of-user-registration-success")
+            self.log(f"  [FAIL] 预期 end-of-user-registration-success")
             return None
-        # ★ 保存 workflowResultHandle (Step 12a 需要作为 authCode)
+        # ★ 保存 Step10 redirect 里的 state / workflowResultHandle
         redir_url = d.get("redirect", {}).get("url", "")
         if redir_url:
-            m_wrh = re.search(r"workflowResultHandle=([^&#]+)", redir_url)
-            if m_wrh:
-                self._workflow_result_handle = m_wrh.group(1)
-                self.log(f"  ★ workflowResultHandle={self._workflow_result_handle}")
-        self.log("  ✅ 密码设置成功, 注册完成!")
+            p10 = urlparse(redir_url)
+            qs10 = parse_qs(p10.query)
+            s10 = qs10.get("state", [None])[0]
+            if s10:
+                self._step10_state = s10
+                self.log(f"  ★ step10 state={s10[:60]}...")
+            wrh10 = qs10.get("workflowResultHandle", [None])[0]
+            if wrh10:
+                self._step10_workflow_result_handle = wrh10
+                self._workflow_result_handle = wrh10
+                self.log(f"  ★ step10 workflowResultHandle={wrh10}")
+        self.log("  [OK] 密码设置成功, 注册完成!")
         return d
 
     # ═══ Step 11: 最终登录 ═══
@@ -886,7 +924,7 @@ class KiroRegister:
         self.log("Step 11: 最终登录...")
         redir = step10_resp.get("redirect", {}).get("url", "")
         if not redir:
-            self.log("  ❌ 无 redirect URL")
+            self.log("  [FAIL] 无 redirect URL")
             return None
         self.log(f"  redirect: {redir[:120]}...")
         p = urlparse(redir)
@@ -895,7 +933,7 @@ class KiroRegister:
         state = qs.get("state", [None])[0]
         wf_result = qs.get("workflowResultHandle", [None])[0]
         if not login_wsh or not state or not wf_result:
-            self.log(f"  ❌ redirect 参数不完整")
+            self.log(f"  [FAIL] redirect 参数不完整")
             return None
         fwcim = self._gen_signin_fwcim()
         fp_i = {"input_type": "FingerPrintRequestInput", "fingerPrint": fwcim}
@@ -919,13 +957,13 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         self._capture_cookies(r)
         if r.status_code != 200:
-            self.log(f"  ❌ {r.status_code}: {r.text[:500]}")
+            self.log(f"  [FAIL] {r.status_code}: {r.text[:500]}")
             return None
         d = r.json()
-        self.log(f"  → sid={d.get('stepId')}")
+        self.log(f"  -> sid={d.get('stepId')}")
         if d.get("stepId") == "end-of-workflow-success":
-            self.log("  ✅ 登录成功! workflow 完成!")
-            # ★ 保存 redirect URL 中的 state 和 workflowResultHandle (Step 12a 需要)
+            self.log("  [OK] 登录成功! workflow 完成!")
+            # ★ 保存 redirect URL 中的 state 和 workflowResultHandle，供 Step12 选择
             redir11 = d.get("redirect", {}).get("url", "")
             if redir11:
                 p11 = urlparse(redir11)
@@ -934,14 +972,14 @@ class KiroRegister:
                 if s11:
                     self._step11_state = s11
                     self.log(f"  ★ step11 state={s11[:60]}...")
-                # ★ 关键: sso-token 的 authCode 是 step 11 的 workflowResultHandle
-                # 不是 step 10 的! step 11 redirect 中有新的 workflowResultHandle
+                else:
+                    self.log("  [WARN] step11 redirect 未返回 state，保留已有 state")
                 wrh11 = qs11.get("workflowResultHandle", [None])[0]
                 if wrh11:
-                    self._workflow_result_handle = wrh11
-                    self.log(f"  ★ step11 workflowResultHandle={wrh11} (覆盖 step10 的值)")
+                    self._step11_workflow_result_handle = wrh11
+                    self.log(f"  ★ step11 workflowResultHandle={wrh11}")
         else:
-            self.log(f"  ⚠️ stepId={d.get('stepId')}, 可能需要额外步骤")
+            self.log(f"  [WARN] stepId={d.get('stepId')}, 可能需要额外步骤")
         return d
 
     # ═══ Step 12: Kiro Web Portal OIDC Auth Code Flow → 获取 accessToken + sessionToken ═══
@@ -971,14 +1009,32 @@ class KiroRegister:
 
         # 检查必要数据
         if not self._portal_csrf_token:
-            self.log("  ❌ 缺少 portal csrfToken (step 2)")
+            self.log("  [FAIL] 缺少 portal csrfToken (step 2)")
             return None
-        if not self._workflow_result_handle:
-            self.log("  ❌ 缺少 workflowResultHandle (step 10)")
+
+        candidate_pairs = []
+        if self._signup_signin_state and self._step10_workflow_result_handle:
+            candidate_pairs.append(("step8_signin + step10_wrh", self._signup_signin_state, self._step10_workflow_result_handle))
+        if self._step10_state and self._step10_workflow_result_handle:
+            candidate_pairs.append(("step10_state + step10_wrh", self._step10_state, self._step10_workflow_result_handle))
+        if self._signup_signin_state and self._step11_workflow_result_handle:
+            candidate_pairs.append(("step8_signin + step11_wrh", self._signup_signin_state, self._step11_workflow_result_handle))
+        if self._step11_state and self._step11_workflow_result_handle:
+            candidate_pairs.append(("step11_state + step11_wrh", self._step11_state, self._step11_workflow_result_handle))
+        if self._step11_state and self._workflow_result_handle:
+            candidate_pairs.append(("step11_state + selected_wrh", self._step11_state, self._workflow_result_handle))
+        if not candidate_pairs:
+            self.log("  [FAIL] 缺少可用于 sso-token 的 state/authCode 组合")
             return None
-        if not self._step11_state:
-            self.log("  ❌ 缺少 step11 state")
-            return None
+
+        deduped_pairs = []
+        seen_pairs = set()
+        for label, candidate_state, candidate_auth_code in candidate_pairs:
+            key = (candidate_state, candidate_auth_code)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            deduped_pairs.append((label, candidate_state, candidate_auth_code))
 
         # ── 12a: POST portal.sso/auth/sso-token ──
         self.log("  12a: POST portal.sso/auth/sso-token...")
@@ -993,27 +1049,39 @@ class KiroRegister:
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
         }
-        sso_body = urlencode({
-            "authCode": self._workflow_result_handle,
-            "state": self._step11_state,
-            "orgId": "view",
-        })
-        self.log(f"  authCode={self._workflow_result_handle}")
-        self.log(f"  state={self._step11_state[:60]}...")
-        self.log(f"  csrfToken={self._portal_csrf_token}")
-        r = self.s.post(f"{PORTAL}/auth/sso-token", headers=sso_h,
-                        data=sso_body)
-        self.log(f"  Status: {r.status_code}")
-        if r.status_code != 200:
-            self.log(f"  ❌ sso-token 失败: {r.status_code} {r.text[:500]}")
+        sso_resp = None
+        for idx, (label, candidate_state, candidate_auth_code) in enumerate(deduped_pairs, start=1):
+            sso_body = urlencode({
+                "authCode": candidate_auth_code,
+                "state": candidate_state,
+                "orgId": "view",
+            })
+            self.log(f"  12a attempt {idx}: {label}")
+            self.log(f"  authCode={candidate_auth_code}")
+            self.log(f"  state={candidate_state[:60]}...")
+            self.log(f"  csrfToken={self._portal_csrf_token}")
+            r = self.s.post(f"{PORTAL}/auth/sso-token", headers=sso_h, data=sso_body)
+            self.log(f"  Status: {r.status_code}")
+            if r.status_code == 200:
+                self._workflow_result_handle = candidate_auth_code
+                if candidate_auth_code == self._step10_workflow_result_handle:
+                    self.log("  [OK] sso-token 接受 Step10 workflowResultHandle")
+                elif candidate_auth_code == self._step11_workflow_result_handle:
+                    self.log("  [OK] sso-token 接受 Step11 workflowResultHandle")
+                sso_resp = r.json()
+                break
+            self.log(f"  [WARN] sso-token 失败: {r.status_code} {r.text[:500]}")
+            if "Invalid State param" not in (r.text or ""):
+                return None
+        if sso_resp is None:
+            self.log("  [FAIL] 所有 sso-token state/authCode 组合均失败")
             return None
-        sso_resp = r.json()
         bearer_token = sso_resp.get("token", "")
         sso_redirect = sso_resp.get("redirectUrl", "")
         if not bearer_token:
-            self.log(f"  ❌ 无 bearer token: {json.dumps(sso_resp, ensure_ascii=False)[:300]}")
+            self.log(f"  [FAIL] 无 bearer token: {json.dumps(sso_resp, ensure_ascii=False)[:300]}")
             return None
-        self.log(f"  ✅ bearer token (sessionToken)={bearer_token[:60]}...")
+        self.log(f"  [OK] bearer token (sessionToken)={bearer_token[:60]}...")
         self.log(f"  redirectUrl={sso_redirect[:120]}...")
 
         # ── 12a2: GET redirectUrl → 建立 view.awsapps.com SSO session cookie ──
@@ -1053,7 +1121,7 @@ class KiroRegister:
         if r.status_code == 200:
             try:
                 whoami = r.json()
-                self.log(f"  ✅ whoAmI: {json.dumps(whoami, ensure_ascii=False)[:200]}")
+                self.log(f"  [OK] whoAmI: {json.dumps(whoami, ensure_ascii=False)[:200]}")
             except: pass
 
         # ── 12c: POST oidc/authentication_result ──
@@ -1075,25 +1143,25 @@ class KiroRegister:
                         headers=auth_result_h, json=auth_result_body)
         self.log(f"  Status: {r.status_code}")
         if r.status_code != 200:
-            self.log(f"  ❌ authentication_result 失败: {r.status_code} {r.text[:500]}")
+            self.log(f"  [FAIL] authentication_result 失败: {r.status_code} {r.text[:500]}")
             return None
         ar_resp = r.json()
         auth_location = ar_resp.get("location", "")
         if not auth_location:
-            self.log(f"  ❌ 无 location: {json.dumps(ar_resp, ensure_ascii=False)[:300]}")
+            self.log(f"  [FAIL] 无 location: {json.dumps(ar_resp, ensure_ascii=False)[:300]}")
             return None
-        self.log(f"  ✅ location={auth_location[:120]}...")
+        self.log(f"  [OK] location={auth_location[:120]}...")
 
         # ── 12d: GET oidc/authorize?authorization_resumption_context=... ──
-        self.log("  12d: GET authorize (follow redirect → code)...")
+        self.log("  12d: GET authorize (follow redirect -> code)...")
         r = self.s.get(auth_location, headers={**UA, "accept": "text/html",
             "referer": "https://view.awsapps.com/"}, allow_redirects=False)
         self.log(f"  Status: {r.status_code}")
         redirect_loc = r.headers.get("location") or r.headers.get("Location", "")
         if not redirect_loc:
-            self.log(f"  ❌ 无 redirect location, status={r.status_code}")
+            self.log(f"  [FAIL] 无 redirect location, status={r.status_code}")
             return None
-        self.log(f"  ✅ redirect → {redirect_loc[:150]}...")
+        self.log(f"  [OK] redirect -> {redirect_loc[:150]}...")
 
         # 从 redirect URL 提取 code 和 state
         p_loc = urlparse(redirect_loc)
@@ -1101,13 +1169,13 @@ class KiroRegister:
         auth_code = qs_loc.get("code", [None])[0]
         redirect_state = qs_loc.get("state", [None])[0]
         if not auth_code:
-            self.log(f"  ❌ redirect URL 中无 code 参数")
+            self.log(f"  [FAIL] redirect URL 中无 code 参数")
             return None
         if not redirect_state:
-            self.log(f"  ⚠️ redirect URL 中无 state 参数, 回退到 self.state")
+            self.log(f"  [WARN] redirect URL 中无 state 参数, 回退到 self.state")
             redirect_state = self.state
-        self.log(f"  ✅ auth_code={auth_code[:60]}...")
-        self.log(f"  ✅ redirect_state={redirect_state[:60]}...")
+        self.log(f"  [OK] auth_code={auth_code[:60]}...")
+        self.log(f"  [OK] redirect_state={redirect_state[:60]}...")
 
         # ── 12e: POST app.kiro.dev ExchangeToken (CBOR) ──
         self.log("  12e: POST ExchangeToken (CBOR)...")
@@ -1137,23 +1205,23 @@ class KiroRegister:
             cookies={"kiro-visitor-id": self.vid})
         self.log(f"  Status: {r.status_code}")
         if r.status_code != 200:
-            self.log(f"  ❌ ExchangeToken 失败: {r.status_code}")
+            self.log(f"  [FAIL] ExchangeToken 失败: {r.status_code}")
             try: self.log(f"  {r.text[:500]}")
             except: self.log(f"  (binary response, len={len(r.content)})")
             return None
         try:
             resp_data = cbor2.loads(r.content)
         except Exception as e:
-            self.log(f"  ❌ CBOR 解析失败: {e}")
+            self.log(f"  [FAIL] CBOR 解析失败: {e}")
             return None
         access_token = resp_data.get("accessToken", "")
         kiro_csrf = resp_data.get("csrfToken", "")
         expires_in = resp_data.get("expiresIn", 0)
         if not access_token:
-            self.log(f"  ❌ 无 accessToken: {resp_data}")
+            self.log(f"  [FAIL] 无 accessToken: {resp_data}")
             return None
-        self.log(f"  ✅ accessToken={access_token[:60]}...")
-        self.log(f"  ✅ csrfToken={kiro_csrf[:30]}...")
+        self.log(f"  [OK] accessToken={access_token[:60]}...")
+        self.log(f"  [OK] csrfToken={kiro_csrf[:30]}...")
         self.log(f"  expiresIn={expires_in}")
         return {
             "accessToken": access_token,
@@ -1186,7 +1254,7 @@ class KiroRegister:
         """
         OIDC = "https://oidc.us-east-1.amazonaws.com"
         PORTAL = "https://portal.sso.us-east-1.amazonaws.com"
-        self.log("Step 12f: OIDC Device Auth → refreshToken...")
+        self.log("Step 12f: OIDC Device Auth -> refreshToken...")
 
         # ── 12f: POST oidc/client/register ──
         self.log("  12f: POST oidc/client/register...")
@@ -1216,15 +1284,15 @@ class KiroRegister:
                         json=reg_body)
         self.log(f"  Status: {r.status_code}")
         if r.status_code != 200:
-            self.log(f"  ❌ client/register 失败: {r.text[:300]}")
+            self.log(f"  [FAIL] client/register 失败: {r.text[:300]}")
             return None
         reg_resp = r.json()
         client_id = reg_resp.get("clientId", "")
         client_secret = reg_resp.get("clientSecret", "")
         if not client_id or not client_secret:
-            self.log(f"  ❌ 无 clientId/clientSecret")
+            self.log(f"  [FAIL] 无 clientId/clientSecret")
             return None
-        self.log(f"  ✅ clientId={client_id[:40]}...")
+        self.log(f"  [OK] clientId={client_id[:40]}...")
 
         # ── 12g: POST oidc/device_authorization ──
         self.log("  12g: POST oidc/device_authorization...")
@@ -1238,7 +1306,7 @@ class KiroRegister:
                         json=da_body)
         self.log(f"  Status: {r.status_code}")
         if r.status_code != 200:
-            self.log(f"  ❌ device_authorization 失败: {r.text[:300]}")
+            self.log(f"  [FAIL] device_authorization 失败: {r.text[:300]}")
             return None
         da_resp = r.json()
         device_code = da_resp.get("deviceCode", "")
@@ -1246,10 +1314,10 @@ class KiroRegister:
         interval = da_resp.get("interval", 1)
         verification_uri = da_resp.get("verificationUriComplete", "")
         if not device_code or not user_code:
-            self.log(f"  ❌ 无 deviceCode/userCode")
+            self.log(f"  [FAIL] 无 deviceCode/userCode")
             return None
-        self.log(f"  ✅ userCode={user_code}")
-        self.log(f"  ✅ verificationUri={verification_uri[:100]}...")
+        self.log(f"  [OK] userCode={user_code}")
+        self.log(f"  [OK] verificationUri={verification_uri[:100]}...")
 
         # ── 12h: 设备授权确认 (直接调用 oidc.amazonaws.com) ──
         # 真实流程 (来自浏览器抓包):
@@ -1279,14 +1347,14 @@ class KiroRegister:
             json={"userCode": user_code, "userSessionId": bearer_token})
         self.log(f"  Status: {r.status_code} {r.text[:300]}")
         if r.status_code != 200:
-            self.log(f"  ❌ accept_user_code 失败")
+            self.log(f"  [FAIL] accept_user_code 失败")
             return None
         accept_resp = r.json()
         device_context = accept_resp.get("deviceContext", {})
         dc_id = device_context.get("deviceContextId", "")
         dc_client_id = device_context.get("clientId", client_id)
         dc_client_type = device_context.get("clientType", "public")
-        self.log(f"  ✅ deviceContextId={dc_id[:60]}...")
+        self.log(f"  [OK] deviceContextId={dc_id[:60]}...")
 
         # 12h-2: POST portal.sso/session/device → device session token
         self.log("  12h-2: POST portal.sso/session/device...")
@@ -1304,7 +1372,7 @@ class KiroRegister:
         device_token = bearer_token
         if r.status_code == 200:
             device_token = r.json().get("token", bearer_token)
-        self.log(f"  ✅ device_token={device_token[:60]}...")
+        self.log(f"  [OK] device_token={device_token[:60]}...")
 
         # 12h-3: POST oidc/consent_details
         self.log("  12h-3: POST consent_details...")
@@ -1315,7 +1383,7 @@ class KiroRegister:
                   "clientType": dc_client_type, "userSessionId": device_token})
         self.log(f"  Status: {r.status_code} {r.text[:300]}")
         if r.status_code == 200:
-            self.log(f"  ✅ consent_details OK")
+            self.log(f"  [OK] consent_details OK")
 
         # 12h-4: POST oidc/device_authorization/associate_token
         self.log("  12h-4: POST associate_token...")
@@ -1328,9 +1396,9 @@ class KiroRegister:
                   "userSessionId": device_token})
         self.log(f"  Status: {r.status_code} {r.text[:300]}")
         if r.status_code not in (200, 204):
-            self.log(f"  ❌ associate_token 失败")
+            self.log(f"  [FAIL] associate_token 失败")
             return None
-        self.log(f"  ✅ associate_token 完成")
+        self.log(f"  [OK] associate_token 完成")
 
         # ── 12i: POST oidc/token → refreshToken ──
         self.log("  12i: POST oidc/token (轮询获取 refreshToken)...")
@@ -1360,21 +1428,21 @@ class KiroRegister:
                     poll_interval = min(poll_interval + 1, 10)
                     self.log(f"  slow_down, interval={poll_interval}s")
                 else:
-                    self.log(f"  ❌ token 错误: {err_code} - {err.get('error_description','')}")
+                    self.log(f"  [FAIL] token 错误: {err_code} - {err.get('error_description','')}")
                     return None
             except:
-                self.log(f"  ❌ token 响应异常: {r.status_code} {r.text[:200]}")
+                self.log(f"  [FAIL] token 响应异常: {r.status_code} {r.text[:200]}")
                 return None
             time.sleep(poll_interval)
 
         if not oidc_token:
-            self.log("  ❌ token 轮询超时")
+            self.log("  [FAIL] token 轮询超时")
             return None
 
         oidc_access = oidc_token.get("accessToken", "")
         refresh_token = oidc_token.get("refreshToken", "")
-        self.log(f"  ✅ OIDC accessToken={oidc_access[:60]}...")
-        self.log(f"  ✅ refreshToken={refresh_token[:60]}...")
+        self.log(f"  [OK] OIDC accessToken={oidc_access[:60]}...")
+        self.log(f"  [OK] refreshToken={refresh_token[:60]}...")
         return {
             "clientId": client_id,
             "clientSecret": client_secret,
@@ -1581,14 +1649,14 @@ def wait_for_otp(account_id=None, timeout=120, tag=""):
                         m = re.search(pat, combined, re.IGNORECASE)
                         if m:
                             code = m.group(1)
-                            print(f"{prefix}  ✅ 验证码: {code}")
+                            print(f"{prefix}  [OK] 验证码: {code}")
                             return code
         except Exception as e:
-            print(f"{prefix}  ⚠️ 查询邮件异常: {e}")
+            print(f"{prefix}  [WARN] 查询邮件异常: {e}")
         elapsed = int(time.time() - start)
         print(f"{prefix}  等待中... ({elapsed}s/{timeout}s)")
         time.sleep(3)
-    print(f"{prefix}  ❌ 验证码超时")
+    print(f"{prefix}  [FAIL] 验证码超时")
     return None
 
 
@@ -1609,13 +1677,13 @@ def main():
     else:
         email = LAOUDO_EMAIL
         mail_token = LAOUDO_ACCOUNT_ID
-        print(f"✅ 邮箱: {email} (laoudo accountId={LAOUDO_ACCOUNT_ID})")
+        print(f"[OK] 邮箱: {email} (laoudo accountId={LAOUDO_ACCOUNT_ID})")
 
     reg = KiroRegister(proxy=proxy, tag="REG-1")
     ok, info = reg.register(email, pwd=pwd, name=name,
                             mail_token=mail_token)
     if ok:
-        print(f"\n✅ 注册成功!")
+        print(f"\n[OK] 注册成功!")
         print(f"  邮箱: {info['email']}")
         print(f"  密码: {info['password']}")
         if info.get('accessToken'):
@@ -1638,7 +1706,7 @@ def main():
             f.write(rec + "\n")
         print("  已保存到 kiro_accounts.txt")
     else:
-        print(f"\n❌ 注册失败: {info.get('error')}")
+        print(f"\n[FAIL] 注册失败: {info.get('error')}")
 
 if __name__ == "__main__":
     main()
