@@ -27,9 +27,11 @@ htmlcov/
 
 # 数据库
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
 *.db.*.bak
+*.db.pre_*
 
 # 日志与运行时文件
 logs/
@@ -86,9 +88,12 @@ Desktop.ini
 *.swo
 .ace-tool/
 
-# AI 工具
+# AI 工具 & 设计文档
 AGENTS.md
 .claude/
+.trellis/
+.windsurf/
+REFACTOR-PLAN.md
 
 # 敏感文件
 *.har

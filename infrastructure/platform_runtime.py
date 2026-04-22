@@ -35,6 +35,12 @@ PERSISTED_ACTION_DATA_KEYS = {
     "clientId",
     "clientSecret",
     "workspaceId",
+    "account_id",
+    "accountId",
+    "org_id",
+    "orgId",
+    "auth_token",
+    "authToken",
 }
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account"}
@@ -107,6 +113,34 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
     if "has_valid_payment_method" in data:
         overview["has_valid_payment_method"] = data.get("has_valid_payment_method")
         overview["chips"].append("已绑卡" if data.get("has_valid_payment_method") else "未绑卡")
+
+    for key in (
+        "remaining_credits",
+        "usage_total",
+        "plan_credits",
+        "next_reset_at",
+        "days_until_reset",
+        "prompt_credits_limit",
+        "flow_action_credits_limit",
+        "prompt_remaining_percent",
+        "flow_action_remaining_percent",
+    ):
+        if data.get(key) not in (None, ""):
+            overview[key] = data.get(key)
+    if isinstance(data.get("usage_breakdowns"), list):
+        overview["usage_breakdowns"] = data.get("usage_breakdowns")
+        for item in data.get("usage_breakdowns") or []:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("display_name") or item.get("resource_type") or "usage"
+            remaining = item.get("remaining_usage")
+            limit = item.get("usage_limit")
+            chip = f"{label}"
+            if remaining not in (None, ""):
+                chip += f" 剩{remaining}"
+            if limit not in (None, ""):
+                chip += f" / {limit}"
+            overview["chips"].append(chip)
 
     usage_summary = data.get("usage_summary") or {}
     if platform == "cursor" and isinstance(usage_summary.get("models"), dict):

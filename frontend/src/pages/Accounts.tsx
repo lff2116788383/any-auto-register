@@ -26,6 +26,10 @@ function getAccountOverview(acc: any) {
   return acc?.overview || {}
 }
 
+function getDisplaySummary(acc: any) {
+  return acc?.display_summary && typeof acc.display_summary === 'object' ? acc.display_summary : {}
+}
+
 function getVerificationMailbox(acc: any) {
   const providerResources = Array.isArray(acc?.provider_resources) ? acc.provider_resources : []
   const normalized = providerResources.find((item: any) => item?.resource_type === 'mailbox')
@@ -40,22 +44,30 @@ function getVerificationMailbox(acc: any) {
 }
 
 function getLifecycleStatus(acc: any) {
-  return acc?.lifecycle_status || 'registered'
+  return getDisplaySummary(acc)?.status?.lifecycle || acc?.lifecycle_status || 'registered'
 }
 
 function getDisplayStatus(acc: any) {
-  return acc?.display_status || acc?.plan_state || getLifecycleStatus(acc)
+  return getDisplaySummary(acc)?.status?.display || acc?.display_status || acc?.plan_state || getLifecycleStatus(acc)
 }
 
 function getPlanState(acc: any) {
-  return acc?.plan_state || acc?.overview?.plan_state || 'unknown'
+  return getDisplaySummary(acc)?.status?.plan_state || acc?.plan_state || acc?.overview?.plan_state || 'unknown'
 }
 
 function getValidityStatus(acc: any) {
-  return acc?.validity_status || acc?.overview?.validity_status || 'unknown'
+  return getDisplaySummary(acc)?.status?.validity || acc?.validity_status || acc?.overview?.validity_status || 'unknown'
 }
 
 function getCompactStatusMeta(acc: any) {
+  const summary = getDisplaySummary(acc)
+  const primaryMetrics = Array.isArray(summary?.primary_metrics) ? summary.primary_metrics : []
+  if (primaryMetrics.length > 0) {
+    return primaryMetrics.slice(0, 2).map((item: any) => {
+      const sub = item?.sub ? ` · ${item.sub}` : ''
+      return `${item?.label || ''}:${item?.value || '-'}${sub}`
+    }).join(' / ')
+  }
   const overview = getAccountOverview(acc)
   const parts = [
     `生命周期:${getLifecycleStatus(acc)}`,
@@ -70,6 +82,31 @@ function getCompactStatusMeta(acc: any) {
   return parts.join(' / ')
 }
 
+function getPrimaryMetrics(acc: any) {
+  const metrics = getDisplaySummary(acc)?.primary_metrics
+  return Array.isArray(metrics) ? metrics : []
+}
+
+function getSecondaryMetrics(acc: any) {
+  const metrics = getDisplaySummary(acc)?.secondary_metrics
+  return Array.isArray(metrics) ? metrics : []
+}
+
+function getDisplayWarnings(acc: any) {
+  const warnings = getDisplaySummary(acc)?.warnings
+  return Array.isArray(warnings) ? warnings : []
+}
+
+function getDisplayBadges(acc: any) {
+  const badges = getDisplaySummary(acc)?.badges
+  return Array.isArray(badges) ? badges : []
+}
+
+function getDisplaySections(acc: any) {
+  const sections = getDisplaySummary(acc)?.sections
+  return Array.isArray(sections) ? sections : []
+}
+
 function getProviderAccounts(acc: any) {
   return Array.isArray(acc?.provider_accounts) ? acc.provider_accounts : []
 }
@@ -81,16 +118,6 @@ function getCredentials(acc: any) {
 function getCashierUrl(acc: any) {
   const overview = getAccountOverview(acc)
   return overview?.cashier_url || acc?.cashier_url || ''
-}
-
-function getRemainingCredits(acc: any) {
-  const overview = getAccountOverview(acc)
-  return overview?.remaining_credits || overview?.usage?.remaining_credits || ''
-}
-
-function getUsageTotal(acc: any) {
-  const overview = getAccountOverview(acc)
-  return overview?.usage_total || overview?.usage?.aggregated_credit_usage?.total || ''
 }
 
 function getPrimaryToken(acc: any) {
@@ -324,7 +351,7 @@ function RegisterModal({
     onDone()
   }
 
-  return (
+  const dialog = (
     <div className="dialog-backdrop" onClick={!taskId ? onClose : undefined}>
       <div className="dialog-panel dialog-panel-md flex flex-col"
            onClick={e => e.stopPropagation()} style={{maxHeight: '88vh'}}>
@@ -448,6 +475,8 @@ function RegisterModal({
       </div>
     </div>
   )
+
+  return typeof document !== 'undefined' ? createPortal(dialog, document.body) : dialog
 }
 
 // ── 新增账号弹框 ─────────────────────────────────────────
@@ -513,6 +542,97 @@ function ResultStat({ label, value }: { label: string; value: any }) {
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2">
       <div className="text-[11px] uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</div>
       <div className="mt-1 text-sm font-medium text-[var(--text-primary)] break-all">{formatResultValue(value)}</div>
+    </div>
+  )
+}
+
+function metricToneClass(tone?: string) {
+  if (tone === 'good') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+  if (tone === 'warning') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
+  if (tone === 'danger') return 'border-red-500/25 bg-red-500/10 text-red-200'
+  return 'border-[var(--border)] bg-[var(--bg-hover)] text-[var(--text-primary)]'
+}
+
+function metricAccentClass(tone?: string) {
+  if (tone === 'good') return 'from-emerald-400/70 to-cyan-300/50'
+  if (tone === 'warning') return 'from-amber-300/80 to-orange-300/50'
+  if (tone === 'danger') return 'from-red-400/80 to-rose-300/50'
+  return 'from-[var(--accent)]/80 to-[var(--accent-strong)]/45'
+}
+
+function DisplayMetricCard({ metric, compact = false }: { metric: any; compact?: boolean }) {
+  return (
+    <div className={`group relative overflow-hidden rounded-[18px] border px-3.5 py-3 ${metricToneClass(metric?.tone)}`}>
+      <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${metricAccentClass(metric?.tone)}`} />
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.18em] opacity-65">{metric?.label || '-'}</div>
+          {metric?.sub ? <div className="mt-1 truncate text-[11px] opacity-65">{metric.sub}</div> : null}
+        </div>
+        <div className={`${compact ? 'text-sm' : 'text-lg'} shrink-0 font-semibold tracking-[-0.03em]`}>{formatResultValue(metric?.value)}</div>
+      </div>
+      {typeof metric?.percent === 'number' ? (
+        <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+          <div className={`h-full rounded-full bg-gradient-to-r ${metricAccentClass(metric?.tone)}`} style={{ width: `${Math.max(0, Math.min(100, metric.percent))}%` }} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function DisplayMetricPill({ metric }: { metric: any }) {
+  return (
+    <div className={`min-w-0 rounded-full border px-2.5 py-1 ${metricToneClass(metric?.tone)}`}>
+      <div className="flex min-w-0 items-center gap-2 text-[11px]">
+        <span className="truncate opacity-70">{metric?.label || '-'}</span>
+        <span className="shrink-0 font-semibold">{formatResultValue(metric?.value)}</span>
+      </div>
+      {typeof metric?.percent === 'number' ? (
+        <div className="mt-1 h-1 overflow-hidden rounded-full bg-black/25">
+          <div className={`h-full rounded-full bg-gradient-to-r ${metricAccentClass(metric?.tone)}`} style={{ width: `${Math.max(0, Math.min(100, metric.percent))}%` }} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function DisplayWarnings({ warnings }: { warnings: any[] }) {
+  if (!warnings.length) return null
+  return (
+    <div className="space-y-2">
+      {warnings.map((item: any, index: number) => (
+        <div key={`${item?.key || 'warning'}-${index}`} className={`rounded-xl border px-3 py-2 text-xs ${metricToneClass(item?.tone || 'warning')}`}>
+          {item?.message || '-'}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DisplaySections({ sections }: { sections: any[] }) {
+  if (!sections.length) return null
+  return (
+    <div className="space-y-3">
+      {sections.map((section: any) => (
+        <div key={section?.key || section?.title} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
+          <div className="text-xs font-semibold text-[var(--text-primary)]">{section?.title || '明细'}</div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {(Array.isArray(section?.items) ? section.items : []).map((item: any, index: number) => (
+              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+                <div className="text-xs font-semibold text-[var(--text-primary)]">{item?.title || '-'}</div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
+                  {(Array.isArray(item?.metrics) ? item.metrics : []).map((metric: any) => (
+                    <div key={metric?.key || metric?.label}>
+                      <span className="text-[var(--text-muted)]">{metric?.label || '-'}: </span>
+                      <span>{formatResultValue(metric?.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -698,25 +818,37 @@ function ActionTaskModal({
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
-        className="dialog-panel dialog-panel-md flex flex-col"
+        className="dialog-panel flex w-[min(960px,calc(100vw-32px))] max-w-none flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
-        style={{ maxHeight: '88vh' }}
+        style={{ maxHeight: '90vh' }}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-          <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">平台操作任务日志</p>
+        <div className="relative overflow-hidden border-b border-[var(--border)] px-6 py-5">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_0%,rgba(9,182,162,0.18),transparent_34%),linear-gradient(90deg,rgba(255,255,255,0.04),transparent)]" />
+          <div className="relative flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="mb-2 inline-flex rounded-full border border-[var(--border)] bg-[var(--chip-bg)] px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Platform Action
+              </div>
+              <h2 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">任务状态、错误摘要与实时日志集中展示</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {taskStatus ? (
+                <Badge variant={TASK_STATUS_VARIANTS[taskStatus] || 'secondary'}>
+                  {getTaskStatusText(taskStatus)}
+                </Badge>
+              ) : null}
+              <button onClick={onClose} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
-          {taskStatus ? (
-            <Badge variant={TASK_STATUS_VARIANTS[taskStatus] || 'secondary'}>
-              {getTaskStatusText(taskStatus)}
-            </Badge>
-          ) : null}
         </div>
-        <div className="px-6 py-4 flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto px-6 py-5">
           <TaskLogPanel taskId={taskId} onDone={onDone} />
         </div>
-        <div className="px-6 py-3 border-t border-[var(--border)] flex justify-end">
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-3 text-xs text-[var(--text-muted)]">
+          <span>任务 ID: {taskId}</span>
           <Button variant="outline" size="sm" onClick={onClose}>
             关闭
           </Button>
@@ -1079,6 +1211,11 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
   const verificationMailbox = getVerificationMailbox(acc)
   const providerAccounts = getProviderAccounts(acc)
   const credentials = getCredentials(acc)
+  const primaryMetrics = getPrimaryMetrics(acc)
+  const secondaryMetrics = getSecondaryMetrics(acc)
+  const warnings = getDisplayWarnings(acc)
+  const displayBadges = getDisplayBadges(acc)
+  const displaySections = getDisplaySections(acc)
   const copyText = (text: string) => navigator.clipboard.writeText(text)
   const platformCredentials = credentials.filter((item: any) => item.scope === 'platform')
 
@@ -1103,28 +1240,58 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
         </div>
         {/* ── Scrollable Content ── */}
         <div className="px-6 py-4 space-y-3 flex-1 overflow-y-auto min-h-0">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <ResultStat label="展示状态" value={getDisplayStatus(acc)} />
-            <ResultStat label="生命周期" value={getLifecycleStatus(acc)} />
-            <ResultStat label="有效性" value={getValidityStatus(acc)} />
+          <div className="relative overflow-hidden rounded-[22px] border border-[var(--border)] bg-[linear-gradient(135deg,rgba(var(--accent-rgb),0.13),rgba(var(--accent-strong-rgb),0.06)_42%,rgba(255,255,255,0.035))] p-4 shadow-[var(--shadow-soft)]">
+            <div className="pointer-events-none absolute -right-16 -top-20 h-44 w-44 rounded-full bg-[var(--accent-soft)] blur-3xl" />
+            <div className="relative flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">核心状态</div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge variant={STATUS_VARIANT[getDisplayStatus(acc)] || 'secondary'}>{getDisplayStatus(acc)}</Badge>
+                  <span className="text-lg font-semibold tracking-[-0.03em] text-[var(--text-primary)]">{acc.plan_name || overview.plan_name || overview.plan || getPlanState(acc)}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-right text-[11px] text-[var(--text-muted)] sm:grid-cols-3">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                  <div className="uppercase tracking-[0.12em]">生命周期</div>
+                  <div className="mt-1 text-[var(--text-primary)]">{getLifecycleStatus(acc)}</div>
+                </div>
+                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                  <div className="uppercase tracking-[0.12em]">有效性</div>
+                  <div className="mt-1 text-[var(--text-primary)]">{getValidityStatus(acc)}</div>
+                </div>
+                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                  <div className="uppercase tracking-[0.12em]">套餐状态</div>
+                  <div className="mt-1 text-[var(--text-primary)]">{getPlanState(acc)}</div>
+                </div>
+              </div>
+            </div>
+            {secondaryMetrics.length > 0 && (
+              <div className="relative mt-4 grid gap-2 sm:grid-cols-2">
+                {secondaryMetrics.slice(0, 4).map((metric: any) => (
+                  <DisplayMetricCard key={metric.key || metric.label} metric={metric} compact />
+                ))}
+              </div>
+            )}
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <ResultStat label="套餐状态" value={getPlanState(acc)} />
-            <ResultStat label="套餐名称" value={acc.plan_name || overview.plan_name || overview.plan} />
-          </div>
-          {(getRemainingCredits(acc) || getUsageTotal(acc)) && (
+
+          {primaryMetrics.length > 0 && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <ResultStat label="剩余额度" value={getRemainingCredits(acc) || '-'} />
-              <ResultStat label="已用额度" value={getUsageTotal(acc) || '-'} />
+              {primaryMetrics.map((metric: any) => (
+                <DisplayMetricCard key={metric.key || metric.label} metric={metric} />
+              ))}
             </div>
           )}
-          {(overview?.chips?.length > 0 || verificationMailbox?.email) && (
+
+          <DisplayWarnings warnings={warnings} />
+          <DisplaySections sections={displaySections} />
+
+          {(displayBadges.length > 0 || verificationMailbox?.email) && (
             <div className="space-y-2">
-              {overview?.chips?.length > 0 && (
+              {displayBadges.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {overview.chips.map((chip: string) => (
-                    <span key={chip} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
-                      {chip}
+                  {displayBadges.map((badge: any, index: number) => (
+                    <span key={`${badge?.label || 'badge'}-${index}`} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+                      {badge?.label}
                     </span>
                   ))}
                 </div>
@@ -1482,21 +1649,21 @@ export default function Accounts() {
   const verificationBacked = accounts.filter(acc => Boolean(getVerificationMailbox(acc)?.email)).length
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid shrink-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <WorkspaceMetric label="账号数" value={total} icon={WalletCards} />
         <WorkspaceMetric label="验证码邮箱" value={verificationBacked} icon={Inbox} />
         <WorkspaceMetric label="已订阅" value={visibleSubscribed} icon={ShieldCheck} />
         <WorkspaceMetric label="可操作" value={linkedCashier} icon={ScanSearch} />
       </div>
 
-      <Card className="bg-[var(--bg-pane)]/60">
+      <Card className="shrink-0 bg-[var(--bg-pane)]/60">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -1600,14 +1767,13 @@ export default function Accounts() {
         </div>
       </Card>
 
-      <Card className="overflow-hidden p-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
-          <div>
+      <Card className="min-h-0 flex-1 overflow-hidden p-0">
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="shrink-0 border-b border-[var(--border)] px-5 py-4">
             <div className="text-sm font-medium text-[var(--text-primary)]">{platformLabel} 账号清单</div>
           </div>
-        </div>
-        <div className="glass-table-wrap overflow-x-hidden">
-        <table className="table-fixed w-full text-sm">
+          <div className="glass-table-wrap min-h-0 flex-1 overflow-auto">
+        <table className="table-fixed w-full min-w-[1180px] text-sm">
           <colgroup>
             <col className="w-10" />
             <col className="w-[31%]" />
@@ -1617,9 +1783,9 @@ export default function Accounts() {
             <col className="w-[10%]" />
             <col className="w-[16%]" />
           </colgroup>
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="border-b border-[var(--border)] text-[var(--text-muted)]">
-              <th className="px-4 py-2.5 text-left w-10">
+              <th className="w-10 bg-[var(--bg-card)] px-4 py-2.5 text-left">
                 <input
                   type="checkbox"
                   checked={allSelectedOnPage}
@@ -1627,12 +1793,12 @@ export default function Accounts() {
                   className="checkbox-accent"
                 />
               </th>
-              <th className="px-4 py-2.5 text-left">邮箱</th>
-              <th className="px-4 py-2.5 text-left">密码</th>
-              <th className="px-4 py-2.5 text-left">状态</th>
-              <th className="px-4 py-2.5 text-left">试用链接</th>
-              <th className="px-4 py-2.5 text-left">注册时间</th>
-              <th className="px-4 py-2.5 text-right">操作</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">邮箱</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">密码</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">状态</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">试用链接</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">注册时间</th>
+              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -1649,6 +1815,8 @@ export default function Accounts() {
               (() => {
                 const overview = getAccountOverview(acc)
                 const verificationMailbox = getVerificationMailbox(acc)
+                const primaryMetrics = getPrimaryMetrics(acc)
+                const displayBadges = getDisplayBadges(acc)
                 return (
               <tr key={acc.id} className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-hover)]/70 transition-colors cursor-pointer"
                   onClick={() => setDetail(acc)}>
@@ -1678,11 +1846,11 @@ export default function Accounts() {
                       远端邮箱: {overview.remote_email}
                     </div>
                   )}
-                  {Array.isArray(overview?.chips) && overview.chips.length > 0 && (
+                  {displayBadges.length > 0 && (
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {overview.chips.slice(0, 4).map((chip: string) => (
-                        <span key={chip} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                          {chip}
+                      {displayBadges.slice(0, 3).map((badge: any, index: number) => (
+                        <span key={`${badge?.label || 'badge'}-${index}`} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                          {badge?.label}
                         </span>
                       ))}
                     </div>
@@ -1697,12 +1865,20 @@ export default function Accounts() {
                 <td className="px-4 py-2.5 align-top">
                   <div className="min-w-0 space-y-1">
                     <Badge variant={STATUS_VARIANT[getDisplayStatus(acc)] || 'secondary'}>{getDisplayStatus(acc)}</Badge>
-                    <div
-                      className="truncate text-[11px] leading-5 text-[var(--text-muted)]"
-                      title={getCompactStatusMeta(acc)}
-                    >
-                      {getCompactStatusMeta(acc)}
-                    </div>
+                    {primaryMetrics.length > 0 ? (
+                      <div className="mt-1 flex max-w-full flex-wrap gap-1.5">
+                        {primaryMetrics.slice(0, 2).map((metric: any) => (
+                          <DisplayMetricPill key={metric.key || metric.label} metric={metric} />
+                        ))}
+                      </div>
+                    ) : (
+                      <div
+                        className="truncate text-[11px] leading-5 text-[var(--text-muted)]"
+                        title={getCompactStatusMeta(acc)}
+                      >
+                        {getCompactStatusMeta(acc)}
+                      </div>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-2.5 align-top">
@@ -1731,6 +1907,7 @@ export default function Accounts() {
             ))}
           </tbody>
         </table>
+          </div>
         </div>
       </Card>
     </div>

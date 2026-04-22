@@ -1,16 +1,15 @@
 """平台插件注册表 - 自动扫描 platforms/ 目录加载插件"""
 import importlib
-import json
 import pkgutil
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, Type
 from sqlmodel import Session, select
 from .base_platform import BasePlatform
 from .db import PlatformCapabilityOverrideModel, engine
 
 _registry: Dict[str, Type[BasePlatform]] = {}
-_PLATFORM_CAPABILITIES_FILE = Path(__file__).resolve().parent.parent / "resources" / "platform_capabilities.json"
+
+_CAPABILITY_KEYS = ("supported_executors", "supported_identity_modes", "supported_oauth_providers")
 
 
 def _utcnow() -> datetime:
@@ -39,34 +38,25 @@ def get(name: str) -> Type[BasePlatform]:
     return _registry[name]
 
 
-def _load_platform_capability_bootstrap() -> dict[str, dict]:
-    with _PLATFORM_CAPABILITIES_FILE.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
+def _class_defaults(cls: Type[BasePlatform]) -> dict[str, list[str]]:
+    """从类属性获取 fallback 默认值（仅在 DB 无数据时使用）。"""
     return {
-        str(name): dict(payload or {})
-        for name, payload in dict(raw or {}).items()
-    }
-
-
-def _bootstrap_platform_capabilities(cls: Type[BasePlatform]) -> dict[str, list[str]]:
-    bootstrap = _load_platform_capability_bootstrap().get(cls.name) or {}
-    return {
-        "supported_executors": list(bootstrap.get("supported_executors", [])),
-        "supported_identity_modes": list(bootstrap.get("supported_identity_modes", [])),
-        "supported_oauth_providers": list(bootstrap.get("supported_oauth_providers", [])),
+        "supported_executors": list(getattr(cls, "supported_executors", [])),
+        "supported_identity_modes": list(getattr(cls, "supported_identity_modes", [])),
+        "supported_oauth_providers": list(getattr(cls, "supported_oauth_providers", [])),
     }
 
 
 def _normalize_platform_capabilities(data: dict | None, cls: Type[BasePlatform]) -> dict[str, list[str]]:
-    bootstrap = _bootstrap_platform_capabilities(cls)
+    defaults = _class_defaults(cls)
     payload = data if isinstance(data, dict) else {}
     normalized: dict[str, list[str]] = {}
-    for key, fallback in bootstrap.items():
+    for key in _CAPABILITY_KEYS:
         raw = payload.get(key)
         if isinstance(raw, list):
             normalized[key] = [str(item) for item in raw if str(item or "").strip()]
         else:
-            normalized[key] = list(fallback)
+            normalized[key] = list(defaults.get(key, []))
     return normalized
 
 
@@ -80,7 +70,7 @@ def _ensure_platform_capabilities_seeded(session: Session) -> dict[str, Platform
         item = PlatformCapabilityOverrideModel(platform_name=cls.name)
         item.created_at = _utcnow()
         item.updated_at = _utcnow()
-        item.set_capabilities(_bootstrap_platform_capabilities(cls))
+        item.set_capabilities(_class_defaults(cls))
         session.add(item)
         by_name[cls.name] = item
         changed = True
@@ -98,7 +88,7 @@ def get_platform_capabilities(name: str) -> dict[str, list[str]]:
         item = by_name.get(name)
         if item:
             return _normalize_platform_capabilities(item.get_capabilities(), cls)
-    return _bootstrap_platform_capabilities(cls)
+    return _class_defaults(cls)
 
 
 def list_platforms() -> list:

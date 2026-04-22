@@ -170,17 +170,17 @@ body::after {
   position: fixed;
   inset: 0;
   z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
-  overflow: hidden;
+  overflow: auto;
   background: rgba(3, 8, 8, 0.72);
   backdrop-filter: blur(18px);
 }
 
 .dialog-panel {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  position: relative;
   width: 100%;
   max-height: calc(100dvh - 32px);
   border: 1px solid var(--border);

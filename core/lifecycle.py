@@ -22,6 +22,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _utcnow_iso() -> str:
+    return _utcnow().isoformat().replace("+00:00", "Z")
+
+
 def _utcnow_ts() -> int:
     return int(_utcnow().timestamp())
 
@@ -43,6 +47,7 @@ def check_accounts_validity(
         q = select(AccountModel)
         if platform:
             q = q.where(AccountModel.platform == platform)
+        q = q.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
         accounts = session.exec(q.limit(limit)).all()
         graphs = load_account_graphs(session, [int(a.id) for a in accounts if a.id])
 
@@ -69,10 +74,12 @@ def check_accounts_validity(
                 model = session.get(AccountModel, acc.id)
                 if model:
                     model.updated_at = _utcnow()
+                    summary_updates = {"checked_at": _utcnow_iso(), "valid": valid}
+                    if hasattr(plugin, "get_last_check_overview"):
+                        summary_updates.update(plugin.get_last_check_overview() or {})
                     patch_account_graph(
                         session, model,
-                        lifecycle_status=None if valid else AccountStatus.INVALID.value,
-                        summary_updates={"checked_at": _utcnow().isoformat() + "Z", "valid": valid},
+                        summary_updates=summary_updates,
                     )
                     session.add(model)
                     session.commit()
@@ -166,7 +173,7 @@ def refresh_expiring_tokens(
                             session, model,
                             credential_updates=credential_updates,
                             summary_updates={
-                                "last_refresh_at": _utcnow().isoformat() + "Z",
+                                "last_refresh_at": _utcnow_iso(),
                                 "refresh_success": True,
                             },
                         )

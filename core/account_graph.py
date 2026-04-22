@@ -31,6 +31,9 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "workspace_slug": "identifier",
     "customer_id": "identifier",
     "referral_code": "identifier",
+    "account_id": "identifier",
+    "org_id": "identifier",
+    "auth_token": "token",
     "accessToken": "token",
     "refreshToken": "token",
     "sessionToken": "token",
@@ -38,6 +41,9 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "clientId": "identifier",
     "clientSecret": "secret",
     "workspaceId": "identifier",
+    "accountId": "identifier",
+    "orgId": "identifier",
+    "authToken": "token",
     "cookies": "cookie",
     "cookie": "cookie",
     "api_key": "secret",
@@ -192,12 +198,35 @@ def _derive_display_status(
     return lifecycle_status or "registered"
 
 
+def recover_lifecycle_status_for_valid_account(graph: dict[str, Any]) -> str:
+    """Recover the active lifecycle state for an account that re-validated."""
+    lifecycle_status = _text(
+        graph.get("lifecycle_status") or _safe_dict(graph.get("overview")).get("lifecycle_status")
+    )
+    if lifecycle_status and lifecycle_status != "invalid":
+        return lifecycle_status
+
+    plan_state = _normalize_plan_state(
+        graph.get("plan_state") or _safe_dict(graph.get("overview")).get("plan_state")
+    )
+    if plan_state in {"trial", "subscribed", "expired"}:
+        return plan_state
+    return "registered"
+
+
 def _parse_checked_at(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return ensure_utc_datetime(value)
     if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            base = normalized[:-1]
+            if len(base) >= 6 and base[-6] in {"+", "-"} and base[-3] == ":":
+                normalized = base
+            else:
+                normalized = f"{base}+00:00"
         try:
-            return ensure_utc_datetime(datetime.fromisoformat(value.replace("Z", "+00:00")))
+            return ensure_utc_datetime(datetime.fromisoformat(normalized))
         except ValueError:
             return None
     return None

@@ -1,10 +1,48 @@
 """ChatGPT / Codex CLI 平台插件"""
-import random, string
+import secrets
 from core.base_platform import BasePlatform, Account, AccountStatus, RegisterConfig
 from core.base_mailbox import BaseMailbox
 from core.registration import BrowserRegistrationAdapter, OtpSpec, ProtocolMailboxAdapter, ProtocolOAuthAdapter, RegistrationCapability, RegistrationResult
 from core.registration.helpers import resolve_timeout
 from core.registry import register
+
+
+def _result_text(result, key: str) -> str:
+    if isinstance(result, dict):
+        return str(result.get(key, "") or "")
+    return str(getattr(result, key, "") or "")
+
+
+def _assert_complete_oauth_callback(result) -> None:
+    missing = [
+        key for key in ("account_id", "access_token", "refresh_token", "id_token")
+        if not _result_text(result, key)
+    ]
+    if missing:
+        raise RuntimeError(
+            "ChatGPT 注册未完成完整 OAuth callback，缺少: " + ", ".join(missing)
+        )
+
+
+def _generate_chatgpt_registration_password(length: int = 16) -> str:
+    """生成更稳定通过 OpenAI 注册页校验的密码。
+
+    旧协议流已经验证过：至少带小写、数字、符号时，成功率明显更稳。
+    这里再补一个大写字符，避免浏览器流随机生成出“看起来够长但组合不够强”的密码。
+    """
+    specials = ",._!@#"
+    minimum_length = 12
+    size = max(int(length or minimum_length), minimum_length)
+    required = [
+        secrets.choice("abcdefghijklmnopqrstuvwxyz"),
+        secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        secrets.choice("0123456789"),
+        secrets.choice(specials),
+    ]
+    pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" + specials
+    required.extend(secrets.choice(pool) for _ in range(size - len(required)))
+    secrets.SystemRandom().shuffle(required)
+    return "".join(required)
 
 
 @register
@@ -18,25 +56,62 @@ class ChatGPTPlatform(BasePlatform):
         self.mailbox = mailbox
 
     def check_valid(self, account: Account) -> bool:
+        self._last_check_overview = {}
         try:
-            from platforms.chatgpt.payment import check_subscription_status
+            from platforms.chatgpt.payment import fetch_subscription_status_details
+            from core.proxy_pool import proxy_pool
             class _A: pass
             a = _A()
             extra = account.extra or {}
             a.access_token = extra.get("access_token") or account.token
+            a.id_token = extra.get("id_token", "")
             a.cookies = extra.get("cookies", "")
-            status = check_subscription_status(a, proxy=self.config.proxy if self.config else None)
-            return status not in ("expired", "invalid", "banned", None)
+            a.extra = extra
+
+            region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+            configured_proxy = self.config.proxy if self.config else None
+            proxy_candidates: list[tuple[str | None, bool]] = []
+            if configured_proxy:
+                proxy_candidates.append((configured_proxy, False))
+            else:
+                pooled_proxy = proxy_pool.get_next(region=region)
+                if pooled_proxy:
+                    proxy_candidates.append((pooled_proxy, True))
+            proxy_candidates.append((None, False))
+
+            for proxy, should_report in proxy_candidates:
+                try:
+                    details = fetch_subscription_status_details(a, proxy=proxy)
+                    if should_report and proxy:
+                        proxy_pool.report_success(proxy)
+                    status = details.get("status")
+                    overview = {
+                        "plan": status,
+                        "plan_name": status,
+                        "check_source": details.get("source"),
+                    }
+                    if isinstance(details.get("usage"), dict):
+                        overview["chatgpt_usage"] = details["usage"]
+                    self._last_check_overview = overview
+                    return status not in ("expired", "invalid", "banned", None)
+                except Exception:
+                    if should_report and proxy:
+                        proxy_pool.report_fail(proxy)
+                    continue
         except Exception:
             return False
+        return False
+
+    def get_last_check_overview(self) -> dict:
+        return dict(getattr(self, "_last_check_overview", {}) or {})
 
     def _prepare_registration_password(self, password: str | None) -> str | None:
         if password:
             return password
-        return "".join(random.choices(
-            string.ascii_letters + string.digits + "!@#$", k=16))
+        return _generate_chatgpt_registration_password()
 
     def _map_chatgpt_result(self, result: dict, *, password: str = "", user_id: str = "") -> RegistrationResult:
+        _assert_complete_oauth_callback(result)
         return RegistrationResult(
             email=result.get("email", ""),
             password=password or result.get("password", ""),
@@ -132,6 +207,7 @@ class ChatGPTPlatform(BasePlatform):
                 headless=(ctx.executor_type == "headless"),
                 proxy=ctx.proxy,
                 otp_callback=artifacts.otp_callback,
+                phone_callback=artifacts.phone_callback,
                 log_fn=ctx.log,
             ),
             browser_register_runner=lambda worker, ctx, artifacts: worker.run(
@@ -162,21 +238,10 @@ class ChatGPTPlatform(BasePlatform):
             )
 
         def _map_result(ctx, result):
-            # If refresh_token is missing, try to obtain one via session_token
+            _assert_complete_oauth_callback(result)
+            access_token = result.access_token or ""
             refresh_token = result.refresh_token or ""
             session_token = result.session_token or ""
-            access_token = result.access_token or ""
-
-            if not refresh_token and session_token:
-                try:
-                    from platforms.chatgpt.token_refresh import TokenRefreshManager
-                    manager = TokenRefreshManager(proxy_url=ctx.proxy)
-                    refresh_result = manager.refresh_by_session_token(session_token)
-                    if refresh_result.success and refresh_result.access_token:
-                        access_token = refresh_result.access_token
-                        ctx.log("  通过 session_token 刷新获取了新的 access_token")
-                except Exception:
-                    pass
 
             return RegistrationResult(
                 email=result.email,
@@ -242,8 +307,11 @@ class ChatGPTPlatform(BasePlatform):
         a.refresh_token = extra.get("refresh_token", "")
         a.id_token = extra.get("id_token", "")
         a.session_token = extra.get("session_token", "")
-        a.client_id = extra.get("client_id", "app_EMoamEEZ73f0CkXaXp7hrann")
+        from .constants import OAUTH_CLIENT_ID
+        a.client_id = extra.get("client_id", OAUTH_CLIENT_ID)
         a.cookies = extra.get("cookies", "")
+        a.user_id = account.user_id or ""
+        a.account_id = account.user_id or ""
 
         if action_id == "switch_account":
             from platforms.chatgpt.switch import (
@@ -347,7 +415,6 @@ class ChatGPTPlatform(BasePlatform):
 
         elif action_id == "upload_cpa":
             from platforms.chatgpt.cpa_upload import upload_to_cpa, generate_token_json
-            a.user_id = account.user_id or ""
             token_data = generate_token_json(a)
             ok, msg = upload_to_cpa(token_data, api_url=params.get("api_url"),
                                     api_key=params.get("api_key"))

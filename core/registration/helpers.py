@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.base_sms import create_phone_callbacks
+
 from .errors import BrowserReuseRequiredError, IdentityResolutionError, RegistrationUnsupportedError
 from .models import RegistrationContext
 
@@ -68,6 +70,59 @@ def build_otp_callback(
         return code
 
     return otp_cb
+
+
+def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = None):
+    from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
+    from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+    extra = ctx.extra
+    requested_provider_key = str(
+        extra.get("sms_provider")
+        or extra.get("phone_provider")
+        or ""
+    ).strip()
+    settings_repo = ProviderSettingsRepository()
+    definitions_repo = ProviderDefinitionsRepository()
+
+    provider_key = requested_provider_key
+    if not provider_key:
+        provider_key = str(settings_repo.get_default_provider_key("sms") or "").strip()
+    if not provider_key:
+        provider_key = "sms_activate" if extra.get("sms_activate_api_key") else ""
+    if not provider_key:
+        return None, None
+
+    definition = definitions_repo.get_by_key("sms", provider_key)
+    merged = settings_repo.resolve_runtime_settings("sms", provider_key, extra) if definition else dict(extra)
+
+    auth_fields = []
+    if definition:
+        auth_fields = [
+            str(field.get("key") or "").strip()
+            for field in definition.get_fields()
+            if str(field.get("category") or "").strip() == "auth"
+        ]
+    if auth_fields and not any(str(merged.get(field_key, "")).strip() for field_key in auth_fields):
+        return None, None
+
+    if ctx.proxy and not str(merged.get("sms_proxy") or merged.get("proxy") or "").strip():
+        merged["sms_proxy"] = ctx.proxy
+
+    country = str(
+        merged.get("sms_country")
+        or merged.get("phone_country")
+        or merged.get("sms_activate_country")
+        or ""
+    ).strip()
+    sms_service = str(merged.get("sms_service") or service or ctx.platform_name).strip() or ctx.platform_name
+    return create_phone_callbacks(
+        provider_key,
+        merged,
+        service=sms_service,
+        country=country,
+        log_fn=ctx.log,
+    )
 
 
 def build_link_callback(

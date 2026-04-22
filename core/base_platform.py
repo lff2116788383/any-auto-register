@@ -202,7 +202,11 @@ class BasePlatform(ABC):
         """根据 config 创建验证码解决器"""
         from .base_captcha import create_captcha_solver
 
-        return create_captcha_solver(self._resolve_captcha_solver(), self.config.extra)
+        provider_key = str(kwargs.get("provider_key") or "").strip()
+        if not provider_key:
+            provider_key = self._resolve_captcha_solver()
+        self._prepare_captcha_provider(provider_key)
+        return create_captcha_solver(provider_key, self.config.extra)
 
     def _has_configured_captcha(self, solver_name: str) -> bool:
         from .base_captcha import has_captcha_configured
@@ -210,11 +214,20 @@ class BasePlatform(ABC):
         return has_captcha_configured(solver_name, self.config.extra)
 
     def _resolve_captcha_solver(self) -> str:
+        candidates = self._get_captcha_solver_candidates()
+        if candidates:
+            return candidates[0]
+
+        if self.config.executor_type in {"headless", "headed"}:
+            raise RuntimeError("浏览器模式未配置默认验证码 provider，请先在设置页启用并设为默认")
+        raise RuntimeError("协议模式未配置可用的验证码 provider，请先启用并配置至少一个验证码 provider")
+
+    def _get_captcha_solver_candidates(self) -> list[str]:
         requested = str(self.config.captcha_solver or "").strip().lower()
         if requested and requested not in {"", "auto"}:
             if not self._has_configured_captcha(requested):
                 raise RuntimeError(f"{requested} 未配置，无法创建验证码解决器")
-            return requested
+            return [requested]
 
         if self.config.executor_type in {"headless", "headed"}:
             try:
@@ -222,24 +235,70 @@ class BasePlatform(ABC):
 
                 browser_key = ProviderSettingsRepository().get_default_provider_key("captcha")
                 if browser_key and self._has_configured_captcha(browser_key):
-                    return browser_key
+                    return [browser_key]
             except Exception:
                 pass
-            raise RuntimeError("浏览器模式未配置默认验证码 provider，请先在设置页启用并设为默认")
+            return []
 
-        protocol_order = []
+        candidates: list[str] = []
+
+        def _append_candidate(key: str) -> None:
+            normalized = str(key or "").strip().lower()
+            if not normalized or normalized == "manual" or normalized in candidates:
+                return
+            if self._has_configured_captcha(normalized):
+                candidates.append(normalized)
+
         try:
             from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
-            protocol_order = ProviderSettingsRepository().get_enabled_captcha_order()
+            repo = ProviderSettingsRepository()
+            for item in repo.list_enabled("captcha"):
+                _append_candidate(getattr(item, "provider_key", ""))
         except Exception:
-            protocol_order = list(self.protocol_captcha_order)
+            for solver_name in self.protocol_captcha_order:
+                _append_candidate(solver_name)
 
-        for solver_name in protocol_order:
-            if self._has_configured_captcha(solver_name):
-                return solver_name
+        for solver_name in self.protocol_captcha_order:
+            _append_candidate(solver_name)
 
-        raise RuntimeError("协议模式未配置可用的远程验证码服务，请先启用并配置至少一个验证码 provider")
+        return candidates
+
+    def _prepare_captcha_provider(self, provider_key: str) -> None:
+        from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
+
+        key = str(provider_key or "").strip().lower()
+        if not key:
+            return
+
+        definition = ProviderDefinitionsRepository().get_by_key("captcha", key)
+        if not definition:
+            return
+
+        if str(definition.driver_type or "").strip().lower() == "local_solver":
+            from services.solver_manager import start
+
+            start()
+
+    def solve_turnstile_with_fallback(self, page_url: str, site_key: str) -> str:
+        errors: list[str] = []
+        candidates = self._get_captcha_solver_candidates()
+        if not candidates:
+            raise RuntimeError("未找到可用的 Turnstile 验证码 provider")
+
+        for provider_key in candidates:
+            try:
+                self.log(f"尝试 Turnstile provider: {provider_key}")
+                solver = self._make_captcha(provider_key=provider_key)
+                token = str(solver.solve_turnstile(page_url, site_key) or "").strip()
+                if token:
+                    return token
+                raise RuntimeError("未返回有效 token")
+            except Exception as exc:
+                errors.append(f"{provider_key}: {exc}")
+                self.log(f"Turnstile provider 失败: {provider_key} -> {exc}")
+
+        raise RuntimeError("；".join(errors))
 
     def _get_identity_provider_name(self) -> str:
         from .base_identity import normalize_identity_provider

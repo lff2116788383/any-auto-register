@@ -2,6 +2,7 @@
 常量定义
 """
 
+import os
 import random
 from datetime import datetime
 from enum import Enum
@@ -49,22 +50,38 @@ APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 # OpenAI OAuth 相关常量
 # ============================================================================
 
-# OAuth 参数
-OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-OAUTH_AUTH_URL = "https://auth.openai.com/oauth/authorize"
-OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+# OpenAI 基础 URL（支持通过环境变量覆盖）
+OPENAI_AUTH = os.environ.get("OPENAI_AUTH_BASE_URL", "https://auth.openai.com")
+CHATGPT_APP = os.environ.get("CHATGPT_APP_URL", "https://chatgpt.com")
+PLATFORM_LOGIN_ENTRY = os.environ.get("PLATFORM_LOGIN_ENTRY", "https://platform.openai.com/login")
+
+# OAuth 参数（支持通过环境变量覆盖）
+OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+OAUTH_AUTH_URL = f"{OPENAI_AUTH}/oauth/authorize"
+OAUTH_TOKEN_URL = f"{OPENAI_AUTH}/oauth/token"
 OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
 OAUTH_SCOPE = "openid email profile offline_access"
 
+# Sentinel（PoW 防护）- 版本号可能随 OpenAI 更新而变化（支持通过环境变量覆盖）
+SENTINEL_BASE = os.environ.get("SENTINEL_BASE_URL", "https://sentinel.openai.com")
+SENTINEL_SDK_VERSION = os.environ.get("SENTINEL_SDK_VERSION", "20260124ceb8")
+SENTINEL_FRAME_VERSION = os.environ.get("SENTINEL_FRAME_VERSION", "20260219f9f6")
+SENTINEL_SDK_URL = f"{SENTINEL_BASE}/sentinel/{SENTINEL_SDK_VERSION}/sdk.js"
+SENTINEL_REQ_URL = f"{SENTINEL_BASE}/backend-api/sentinel/req"
+SENTINEL_FRAME_URL = f"{SENTINEL_BASE}/backend-api/sentinel/frame.html?sv={SENTINEL_FRAME_VERSION}"
+
+# OAuth consent 页面表单选择器
+OAUTH_CONSENT_FORM_SELECTOR = 'form[action*="/sign-in-with-chatgpt/"][action*="/consent"]'
+
 # OpenAI API 端点
 OPENAI_API_ENDPOINTS = {
-    "sentinel": "https://sentinel.openai.com/backend-api/sentinel/req",
-    "signup": "https://auth.openai.com/api/accounts/authorize/continue",
-    "register": "https://auth.openai.com/api/accounts/user/register",
-    "send_otp": "https://auth.openai.com/api/accounts/email-otp/send",
-    "validate_otp": "https://auth.openai.com/api/accounts/email-otp/validate",
-    "create_account": "https://auth.openai.com/api/accounts/create_account",
-    "select_workspace": "https://auth.openai.com/api/accounts/workspace/select",
+    "sentinel": SENTINEL_REQ_URL,
+    "signup": f"{OPENAI_AUTH}/api/accounts/authorize/continue",
+    "register": f"{OPENAI_AUTH}/api/accounts/user/register",
+    "send_otp": f"{OPENAI_AUTH}/api/accounts/email-otp/send",
+    "validate_otp": f"{OPENAI_AUTH}/api/accounts/email-otp/validate",
+    "create_account": f"{OPENAI_AUTH}/api/accounts/create_account",
+    "select_workspace": f"{OPENAI_AUTH}/api/accounts/workspace/select",
 }
 
 # OpenAI 页面类型（用于判断账号状态）

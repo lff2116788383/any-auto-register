@@ -11,6 +11,7 @@ export function TaskLogPanel({
   onDone: (status: string) => void
 }) {
   const [lines, setLines] = useState<string[]>([])
+  const [task, setTask] = useState<any | null>(null)
   const [doneStatus, setDoneStatus] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const seenEventIdsRef = useRef<Set<number>>(new Set())
@@ -31,6 +32,7 @@ export function TaskLogPanel({
     doneRef.current = false
     sseHealthyRef.current = false
     setLines([])
+    setTask(null)
     setDoneStatus(null)
 
     const pushEvent = (payload: any) => {
@@ -54,6 +56,14 @@ export function TaskLogPanel({
       }
     }
 
+    const syncTask = async () => {
+      const latest = await apiFetch(`/tasks/${taskId}`)
+      setTask(latest)
+      if (isTerminalTaskStatus(latest.status) && !doneRef.current) {
+        pushEvent({ done: true, status: latest.status })
+      }
+    }
+
     const es = new EventSource(`${API_BASE}/tasks/${taskId}/logs/stream`)
     eventSourceRef.current = es
     es.onopen = () => {
@@ -74,6 +84,8 @@ export function TaskLogPanel({
       sseHealthyRef.current = false
     }
 
+    syncTask().catch(() => {})
+
     const poll = window.setInterval(async () => {
       if (doneRef.current || sseHealthyRef.current) return
       try {
@@ -81,10 +93,7 @@ export function TaskLogPanel({
         for (const item of data.items || []) {
           pushEvent(item)
         }
-        const task = await apiFetch(`/tasks/${taskId}`)
-        if (isTerminalTaskStatus(task.status) && !doneRef.current) {
-          pushEvent({ done: true, status: task.status })
-        }
+        await syncTask()
       } catch {
         // passive
       }
@@ -102,42 +111,93 @@ export function TaskLogPanel({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [lines])
 
+  const currentStatus = doneStatus || task?.status || 'running'
+  const progress = task?.progress_detail || {}
+  const progressTotal = Number(progress.total || 0)
+  const progressCurrent = Number(progress.current || 0)
+  const progressPercent = progressTotal > 0 ? Math.min(100, Math.round((progressCurrent / progressTotal) * 100)) : 0
+  const errorText = task?.error || (Array.isArray(task?.errors) ? task.errors[0] : '')
+  const statusTone =
+    currentStatus === 'succeeded' ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200' :
+    currentStatus === 'failed' ? 'border-red-400/40 bg-red-400/10 text-red-200' :
+    currentStatus === 'cancelled' || currentStatus === 'interrupted' ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' :
+    'border-sky-400/40 bg-sky-400/10 text-sky-200'
+
+  const copyLogs = () => {
+    navigator.clipboard?.writeText(lines.join('\n')).catch(() => {})
+  }
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">日志</div>
-          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">任务执行日志</div>
+    <div className="flex h-full flex-col gap-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className={`rounded-2xl border px-4 py-3 ${statusTone}`}>
+          <div className="text-[11px] uppercase tracking-[0.18em] opacity-70">Status</div>
+          <div className="mt-1 text-sm font-semibold">{getTaskStatusText(currentStatus)}</div>
         </div>
-        <div className="rounded-full border border-[var(--border-soft)] bg-[var(--chip-bg)] px-3 py-1 text-xs text-[var(--text-secondary)]">
-          {doneStatus ? getTaskStatusText(doneStatus) : '进行中'}
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">Progress</div>
+          <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{progress.label || task?.progress || '0/0'}</div>
+        </div>
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">Events</div>
+          <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{lines.length} 条日志</div>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto rounded-[22px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(3,8,8,0.45),rgba(3,8,8,0.24))] p-4 font-mono text-xs space-y-1 min-h-[220px] max-h-[420px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        {lines.length === 0 && <div className="text-[var(--text-muted)]">等待日志...</div>}
-        {lines.map((line, index) => (
-          <div
-            key={index}
-            className={`leading-5 rounded-xl px-2.5 py-1 ${
-              line.includes('✓') || line.includes('成功') ? 'text-emerald-400' :
-              line.includes('✗') || line.includes('失败') || line.includes('错误') ? 'text-red-400' :
-              'text-[var(--text-secondary)]'
-            }`}
-          >
-            {line}
+
+      <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)] ring-1 ring-[var(--border)]">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${
+            currentStatus === 'failed' ? 'bg-red-400' :
+            currentStatus === 'succeeded' ? 'bg-emerald-400' :
+            'bg-sky-400'
+          }`}
+          style={{ width: `${progressTotal > 0 ? progressPercent : (isTerminalTaskStatus(currentStatus) ? 100 : 18)}%` }}
+        />
+      </div>
+
+      {errorText ? (
+        <div className="rounded-2xl border border-red-400/35 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <div className="mb-1 font-semibold">失败原因</div>
+          <div className="break-words text-red-100/85">{errorText}</div>
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">Live Log</div>
+          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">实时执行日志</div>
+        </div>
+        <button
+          type="button"
+          onClick={copyLogs}
+          className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+        >
+          复制日志
+        </button>
+      </div>
+
+      <div className="min-h-[260px] flex-1 overflow-y-auto rounded-[26px] border border-[var(--border)] bg-[radial-gradient(circle_at_top_left,rgba(9,182,162,0.12),transparent_35%),linear-gradient(180deg,rgba(3,8,8,0.62),rgba(3,8,8,0.32))] p-4 font-mono text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+        {lines.length === 0 && (
+          <div className="flex h-full min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)]">
+            等待任务日志...
           </div>
-        ))}
+        )}
+        <div className="space-y-1.5">
+          {lines.map((line, index) => (
+            <div
+              key={index}
+              className={`rounded-xl border border-white/5 bg-white/[0.025] px-3 py-2 leading-5 ${
+                line.includes('✓') || line.includes('成功') ? 'text-emerald-400' :
+                line.includes('✗') || line.includes('失败') || line.includes('错误') ? 'text-red-400' :
+                'text-[var(--text-secondary)]'
+              }`}
+            >
+              {line}
+            </div>
+          ))}
+        </div>
         <div ref={bottomRef} />
       </div>
-      {doneStatus && (
-        <div className={`mt-3 inline-flex w-fit rounded-full border px-3 py-1 text-xs ${
-          doneStatus === 'succeeded' ? 'text-emerald-400' :
-          doneStatus === 'interrupted' || doneStatus === 'cancelled' ? 'text-amber-400' :
-          'text-red-400'
-        }`}>
-          {getTaskStatusText(doneStatus)}
-        </div>
-      )}
     </div>
   )
 }

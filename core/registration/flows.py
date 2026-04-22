@@ -6,6 +6,7 @@ from .adapters import BrowserRegistrationAdapter, ProtocolMailboxAdapter, Protoc
 from .helpers import (
     build_link_callback,
     build_otp_callback,
+    build_phone_callbacks,
     ensure_identity_email,
     ensure_mailbox_identity,
     ensure_oauth_browser_reuse,
@@ -63,13 +64,18 @@ class BrowserRegistrationFlow:
                 success_label=self.adapter.link_spec.success_label,
                 preview_chars=self.adapter.link_spec.preview_chars,
             )
+        artifacts.phone_callback, artifacts.phone_cleanup = build_phone_callbacks(ctx, service=ctx.platform_name)
 
-        worker = self.adapter.browser_worker_builder(ctx, artifacts) if self.adapter.browser_worker_builder else None
-        if worker is None or self.adapter.browser_register_runner is None:
-            raise RuntimeError(f"{ctx.platform_display_name} 未实现浏览器注册适配器")
-        raw = self.adapter.browser_register_runner(worker, ctx, artifacts)
-        artifacts.raw_result = raw
-        return self.adapter.result_mapper(ctx, raw)
+        try:
+            worker = self.adapter.browser_worker_builder(ctx, artifacts) if self.adapter.browser_worker_builder else None
+            if worker is None or self.adapter.browser_register_runner is None:
+                raise RuntimeError(f"{ctx.platform_display_name} 未实现浏览器注册适配器")
+            raw = self.adapter.browser_register_runner(worker, ctx, artifacts)
+            artifacts.raw_result = raw
+            return self.adapter.result_mapper(ctx, raw)
+        finally:
+            if artifacts.phone_cleanup:
+                artifacts.phone_cleanup()
 
 
 class ProtocolMailboxFlow:

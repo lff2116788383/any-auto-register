@@ -45,6 +45,8 @@ class RegistrationContext:
 class RegistrationArtifacts:
     otp_callback: Callable[[], str] | None = None
     verification_link_callback: Callable[[], str] | None = None
+    phone_callback: Callable[[], str] | None = None
+    phone_cleanup: Callable[[], None] | None = None
     captcha_solver: Any = None
     executor: Any = None
     raw_result: Any = None
@@ -61,4 +63,3 @@ class RegistrationResult:
     status: Any = None
     trial_end_time: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
-

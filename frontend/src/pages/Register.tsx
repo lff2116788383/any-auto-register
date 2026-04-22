@@ -25,6 +25,7 @@ const DEFAULT_FORM: Record<string, any> = {
   chrome_user_data_dir: '',
   chrome_cdp_url: '',
   mail_provider: '',
+  sms_provider: '',
 }
 
 function getProviderSetting(settings: ProviderSetting[] = [], providerKey: string) {
@@ -55,8 +56,10 @@ export default function Register() {
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
     captcha_providers: [],
+    sms_providers: [],
     mailbox_settings: [],
     captcha_settings: [],
+    sms_settings: [],
     captcha_policy: {},
     executor_options: [],
     identity_mode_options: [],
@@ -121,10 +124,12 @@ export default function Register() {
           chrome_user_data_dir: cfg.chrome_user_data_dir || f.chrome_user_data_dir,
           chrome_cdp_url: cfg.chrome_cdp_url || f.chrome_cdp_url,
           mail_provider: getDefaultProviderKey((options?.mailbox_settings as ProviderSetting[]) || []) || f.mail_provider,
+          sms_provider: getDefaultProviderKey((options?.sms_settings as ProviderSetting[]) || []) || f.sms_provider,
         }
         const providerFieldKeys = listProviderFieldKeys([
           ...((options?.mailbox_providers as ProviderOption[]) || []),
           ...((options?.captcha_providers as ProviderOption[]) || []),
+          ...((options?.sms_providers as ProviderOption[]) || []),
         ])
         providerFieldKeys.forEach(fieldKey => {
           nextForm[fieldKey] = cfg[fieldKey] || f[fieldKey] || ''
@@ -147,9 +152,13 @@ export default function Register() {
   const mailboxProviderOptions = getProviderSelectOptions(configOptions.mailbox_providers || [])
   const currentMailboxProvider = (configOptions.mailbox_providers || []).find(provider => provider.value === form.mail_provider) || null
   const currentMailboxSetting = getProviderSetting(configOptions.mailbox_settings || [], form.mail_provider)
+  const smsProviderOptions = getProviderSelectOptions(configOptions.sms_providers || [])
+  const currentSmsProvider = (configOptions.sms_providers || []).find(provider => provider.value === form.sms_provider) || null
+  const currentSmsSetting = getProviderSetting(configOptions.sms_settings || [], form.sms_provider)
   const allProviderFieldKeys = listProviderFieldKeys([
     ...(configOptions.mailbox_providers || []),
     ...(configOptions.captcha_providers || []),
+    ...(configOptions.sms_providers || []),
   ])
 
   useEffect(() => {
@@ -177,6 +186,32 @@ export default function Register() {
       return changed ? next : current
     })
   }, [form.mail_provider, currentMailboxProvider, currentMailboxSetting])
+
+  useEffect(() => {
+    const defaultProviderKey = getDefaultProviderKey(configOptions.sms_settings || [])
+    if (!form.sms_provider && defaultProviderKey) {
+      set('sms_provider', defaultProviderKey)
+    }
+  }, [form.sms_provider, configOptions.sms_settings])
+
+  useEffect(() => {
+    if (!currentSmsProvider) return
+    const values = getProviderMergedValues(currentSmsSetting)
+    const fields = currentSmsProvider.fields || []
+    if (fields.length === 0) return
+    setForm(current => {
+      const next = { ...current }
+      let changed = false
+      fields.forEach(field => {
+        const nextValue = values[field.key] ?? current[field.key] ?? ''
+        if ((next[field.key] ?? '') !== nextValue) {
+          next[field.key] = nextValue
+          changed = true
+        }
+      })
+      return changed ? next : current
+    })
+  }, [form.sms_provider, currentSmsProvider, currentSmsSetting])
 
   useEffect(() => {
     if (!platforms.some((p: any) => p.name === form.platform)) {
@@ -223,6 +258,9 @@ export default function Register() {
     }
     if (form.mail_provider) {
       extra.mail_provider = form.mail_provider
+    }
+    if (form.sms_provider) {
+      extra.sms_provider = form.sms_provider
     }
     allProviderFieldKeys.forEach(fieldKey => {
       if (isMeaningfulProviderValue(form[fieldKey])) {
@@ -439,6 +477,24 @@ export default function Register() {
                   <p className="text-xs leading-5 text-[var(--text-muted)]">{currentMailboxProvider.description}</p>
                 ) : null}
                 {(currentMailboxProvider?.fields || []).map(renderProviderField)}
+              </CardContent>
+            </Card>
+          )}
+
+          {smsProviderOptions.length > 0 && (
+            <Card>
+              <CardHeader><CardTitle>短信接码配置</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                {optionsError && (
+                  <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                    {optionsError}
+                  </div>
+                )}
+                <Select label="短信服务" k="sms_provider" options={smsProviderOptions} />
+                {currentSmsProvider?.description ? (
+                  <p className="text-xs leading-5 text-[var(--text-muted)]">{currentSmsProvider.description}</p>
+                ) : null}
+                {(currentSmsProvider?.fields || []).map(renderProviderField)}
               </CardContent>
             </Card>
           )}

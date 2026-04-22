@@ -472,7 +472,39 @@ def init_db():
 
     with Session(engine) as session:
         ProviderDefinitionsRepository().ensure_seeded()
+        _cleanup_non_real_providers()
         sync_all_account_graphs(session)
+        session.commit()
+
+
+def _cleanup_non_real_providers():
+    """generic_http 不是真实邮箱，从 DB 中清除其 definition 和空 setting。"""
+    remove_keys = [("mailbox", "generic_http")]
+    with Session(engine) as session:
+        for pt, pk in remove_keys:
+            setting = session.exec(
+                select(ProviderSettingModel)
+                .where(ProviderSettingModel.provider_type == pt)
+                .where(ProviderSettingModel.provider_key == pk)
+            ).first()
+            if setting:
+                config = setting.get_config() or {}
+                auth = setting.get_auth() or {}
+                if not config and not auth:
+                    session.delete(setting)
+            defn = session.exec(
+                select(ProviderDefinitionModel)
+                .where(ProviderDefinitionModel.provider_type == pt)
+                .where(ProviderDefinitionModel.provider_key == pk)
+            ).first()
+            if defn:
+                remaining = session.exec(
+                    select(ProviderSettingModel)
+                    .where(ProviderSettingModel.provider_type == pt)
+                    .where(ProviderSettingModel.provider_key == pk)
+                ).first()
+                if not remaining:
+                    session.delete(defn)
         session.commit()
 
 

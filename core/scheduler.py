@@ -12,6 +12,10 @@ import threading
 import time
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class Scheduler:
     def __init__(self):
         self._running = False
@@ -65,6 +69,7 @@ class Scheduler:
             q = select(AccountModel)
             if platform:
                 q = q.where(AccountModel.platform == platform)
+            q = q.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
             accounts = s.exec(q.limit(limit)).all()
             graphs = load_account_graphs(s, [int(acc.id or 0) for acc in accounts if acc.id])
             accounts = [
@@ -87,8 +92,14 @@ class Scheduler:
                     a = s.get(AccountModel, acc.id)
                     if a:
                         a.updated_at = datetime.now(timezone.utc)
-                        next_status = None if valid else AccountStatus.INVALID.value
-                        patch_account_graph(s, a, lifecycle_status=next_status)
+                        summary_updates = {"checked_at": _utcnow_iso(), "valid": valid}
+                        if hasattr(plugin, "get_last_check_overview"):
+                            summary_updates.update(plugin.get_last_check_overview() or {})
+                        patch_account_graph(
+                            s,
+                            a,
+                            summary_updates=summary_updates,
+                        )
                         s.add(a)
                         s.commit()
                 if valid:

@@ -2,6 +2,7 @@
 支付核心逻辑 — 生成 Plus/Team 支付链接、无痕打开浏览器、检测订阅状态
 """
 
+import json
 import logging
 import subprocess
 import sys
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 PAYMENT_CHECKOUT_URL = "https://chatgpt.com/backend-api/payments/checkout"
 TEAM_CHECKOUT_BASE_URL = "https://chatgpt.com/checkout/openai_llc/"
+WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+WHAM_USAGE_USER_AGENT = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
 
 
 def _build_proxies(proxy: Optional[str]) -> Optional[dict]:
@@ -46,6 +49,96 @@ def _extract_oai_did(cookies_str: str) -> Optional[str]:
         if part.startswith("oai-did="):
             return part[len("oai-did="):].strip()
     return None
+
+
+def _extract_chatgpt_account_id(account) -> str:
+    direct_candidates = [
+        getattr(account, "chatgpt_account_id", ""),
+    ]
+    extra = getattr(account, "extra", {}) or {}
+    if isinstance(extra, dict):
+        direct_candidates.extend(
+            [
+                extra.get("chatgpt_account_id", ""),
+                extra.get("chatgptAccountId", ""),
+            ]
+        )
+    for candidate in direct_candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+
+    id_token = getattr(account, "id_token", "") or (extra.get("id_token") if isinstance(extra, dict) else "")
+    parsed = None
+    if isinstance(id_token, dict):
+        parsed = id_token
+    elif isinstance(id_token, str) and id_token.strip().startswith("{"):
+        try:
+            parsed = json.loads(id_token)
+        except Exception:
+            parsed = None
+    if isinstance(parsed, dict):
+        for key in ("chatgpt_account_id", "chatgptAccountId", "account_id"):
+            value = str(parsed.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _normalize_subscription_plan(plan: str) -> str:
+    raw = str(plan or "").strip().lower()
+    if not raw:
+        return "free"
+    if any(token in raw for token in ("team", "enterprise", "business")):
+        return "team"
+    if any(token in raw for token in ("plus", "pro", "premium", "paid")):
+        return "plus"
+    return "free"
+
+
+def _subscription_status_from_me(data: dict) -> str:
+    plan = data.get("plan_type") or ""
+    normalized = _normalize_subscription_plan(plan)
+    if normalized != "free":
+        return normalized
+
+    orgs = data.get("orgs", {}).get("data", [])
+    for org in orgs:
+        settings_ = org.get("settings", {})
+        normalized = _normalize_subscription_plan(settings_.get("workspace_plan_type"))
+        if normalized != "free":
+            return normalized
+    return "free"
+
+
+def _subscription_status_from_usage(data: dict) -> str:
+    return _normalize_subscription_plan(data.get("plan_type"))
+
+
+def _fetch_usage_data(account, proxy: Optional[str] = None) -> dict:
+    if not account.access_token:
+        raise ValueError("账号缺少 access_token")
+
+    headers = {
+        "Authorization": f"Bearer {account.access_token}",
+        "User-Agent": WHAM_USAGE_USER_AGENT,
+    }
+    chatgpt_account_id = _extract_chatgpt_account_id(account)
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+
+    resp = cffi_requests.get(
+        WHAM_USAGE_URL,
+        headers=headers,
+        proxies=_build_proxies(proxy),
+        timeout=20,
+        impersonate="chrome124",
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("wham/usage 响应格式异常")
+    return data
 
 
 def _parse_cookie_str(cookies_str: str, domain: str) -> list:
@@ -238,6 +331,11 @@ def check_subscription_status(account: Account, proxy: Optional[str] = None) -> 
     Returns:
         'free' / 'plus' / 'team'
     """
+    return fetch_subscription_status_details(account, proxy=proxy)["status"]
+
+
+def fetch_subscription_status_details(account: Account, proxy: Optional[str] = None) -> dict:
+    """Return normalized subscription status plus raw usage data when available."""
     if not account.access_token:
         raise ValueError("账号缺少 access_token")
 
@@ -246,28 +344,35 @@ def check_subscription_status(account: Account, proxy: Optional[str] = None) -> 
         "Content-Type": "application/json",
     }
 
-    resp = cffi_requests.get(
-        "https://chatgpt.com/backend-api/me",
-        headers=headers,
-        proxies=_build_proxies(proxy),
-        timeout=20,
-        impersonate="chrome110",
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = cffi_requests.get(
+            "https://chatgpt.com/backend-api/me",
+            headers=headers,
+            proxies=_build_proxies(proxy),
+            timeout=20,
+            impersonate="chrome110",
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            usage_data = None
+            try:
+                usage_data = _fetch_usage_data(account, proxy=proxy)
+            except Exception as usage_exc:
+                logger.info("check_subscription_status usage enrichment failed: %s", usage_exc)
+            return {
+                "status": _subscription_status_from_me(data),
+                "source": "backend-api/me",
+                "me": data,
+                "usage": usage_data,
+            }
+    except Exception as exc:
+        logger.info("check_subscription_status fallback to wham/usage: %s", exc)
 
-    # 解析订阅类型
-    plan = data.get("plan_type") or ""
-    if "team" in plan.lower():
-        return "team"
-    if "plus" in plan.lower():
-        return "plus"
-
-    # 尝试从 orgs 或 workspace 信息判断
-    orgs = data.get("orgs", {}).get("data", [])
-    for org in orgs:
-        settings_ = org.get("settings", {})
-        if settings_.get("workspace_plan_type") in ("team", "enterprise"):
-            return "team"
-
-    return "free"
+    data = _fetch_usage_data(account, proxy=proxy)
+    return {
+        "status": _subscription_status_from_usage(data),
+        "source": "backend-api/wham/usage",
+        "me": None,
+        "usage": data,
+    }

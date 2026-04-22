@@ -60,10 +60,13 @@ class PortalService:
         return {
             "mailbox_providers": [],
             "captcha_providers": [],
+            "sms_providers": [],
             "mailbox_drivers": [],
             "captcha_drivers": [],
+            "sms_drivers": [],
             "mailbox_settings": [],
             "captcha_settings": [],
+            "sms_settings": [],
             "captcha_policy": {
                 "protocol_mode": "manual",
                 "protocol_order": [],
@@ -414,10 +417,13 @@ class PortalService:
         return {
             "mailbox_providers": [],
             "captcha_providers": [],
+            "sms_providers": [],
             "mailbox_drivers": [],
             "captcha_drivers": [],
+            "sms_drivers": [],
             "mailbox_settings": [],
             "captcha_settings": [],
+            "sms_settings": [],
             "captcha_policy": {
                 "protocol_mode": "manual",
                 "protocol_order": [],

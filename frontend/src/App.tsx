@@ -75,7 +75,7 @@ function AccountsSubNav() {
         {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
       </button>
       {open && (
-        <div className="ml-4 space-y-1.5 border-l border-[var(--border-soft)] pl-4">
+        <div className="ml-4 max-h-[42vh] space-y-1.5 overflow-y-auto border-l border-[var(--border-soft)] pl-4 pr-1">
           {platforms.map((platform) => (
             <NavLink
               key={platform.key}
@@ -101,8 +101,8 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
   const isLight = theme === 'light'
 
   return (
-    <aside className="app-sidebar flex w-[15rem] shrink-0 flex-col">
-      <div className="flex-1 rounded-[24px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.012))] p-3 shadow-[var(--shadow-hard)] backdrop-blur-xl">
+    <aside className="app-sidebar flex w-[15rem] min-h-0 shrink-0 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col rounded-[24px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.012))] p-3 shadow-[var(--shadow-hard)] backdrop-blur-xl">
         <div className="mb-3 flex items-center justify-between gap-3 rounded-[18px] border border-[var(--border-soft)] bg-[var(--hero-bg)] px-3 py-2.5">
           <div className="text-sm font-semibold text-[var(--text-primary)]">控制台</div>
           <button
@@ -114,7 +114,7 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
           </button>
         </div>
 
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <section>
             <div className="mb-2 px-2 text-[11px] uppercase tracking-[0.22em] text-[var(--text-muted)]">入口</div>
             <nav className="space-y-1.5">
@@ -160,10 +160,10 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
 function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void }) {
   return (
     <div className="app-shell min-h-screen p-2.5 lg:p-3">
-      <div className="app-window flex min-h-[calc(100vh-1.5rem)] gap-3 p-2.5 lg:p-3">
+      <div className="app-window flex h-[calc(100dvh-1.5rem)] min-h-[calc(100dvh-1.5rem)] gap-3 overflow-hidden p-2.5 lg:p-3">
         <Sidebar theme={theme} toggleTheme={toggleTheme} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <main className="min-h-0 flex-1 rounded-[22px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.012))] p-3 shadow-[var(--shadow-hard)] backdrop-blur-xl lg:p-3.5">
+        <div className="flex min-w-0 min-h-0 flex-1 flex-col">
+          <main className="min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.012))] p-3 shadow-[var(--shadow-hard)] backdrop-blur-xl lg:p-3.5">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/accounts" element={<Accounts />} />

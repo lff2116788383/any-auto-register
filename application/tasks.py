@@ -11,7 +11,11 @@ from typing import Any, Callable, Optional
 
 from sqlmodel import Session, select, func
 
-from core.account_graph import patch_account_graph
+from core.account_graph import (
+    load_account_graphs,
+    patch_account_graph,
+    recover_lifecycle_status_for_valid_account,
+)
 from core.base_platform import AccountStatus, RegisterConfig
 from core.datetime_utils import format_local_clock, serialize_datetime
 from core.db import AccountModel, TaskEventModel, TaskLog, TaskModel, engine, save_account
@@ -292,8 +296,9 @@ def append_task_event(task_id: str, message: str, *, event_type: str = "log", le
 def mark_incomplete_tasks_interrupted() -> None:
     task_ids: list[str] = []
     with Session(engine) as session:
+        non_terminal = [TASK_STATUS_PENDING] + list(ACTIVE_TASK_STATUSES)
         tasks = session.exec(
-            select(TaskModel).where(TaskModel.status.in_(list(ACTIVE_TASK_STATUSES)))
+            select(TaskModel).where(TaskModel.status.in_(non_terminal))
         ).all()
         for task in tasks:
             task_ids.append(task.id)
@@ -508,6 +513,10 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
             target.access_token = extra.get("access_token") or account.token
             target.refresh_token = extra.get("refresh_token", "")
             target.id_token = extra.get("id_token", "")
+            target.session_token = extra.get("session_token", "")
+            target.user_id = account.user_id or ""
+            target.account_id = account.user_id or ""
+            target.cookies = extra.get("cookies", "")
 
             token_data = generate_token_json(target)
             ok, msg = upload_to_cpa(token_data)
@@ -564,11 +573,17 @@ def _run_single_account_check(account_id: int, logger: TaskLogger | None = None)
         model = session.get(AccountModel, account_id)
         if model:
             model.updated_at = _utcnow()
+            current_graph = load_account_graphs(session, [account_id]).get(account_id, {})
             summary_updates = {"checked_at": _utcnow_iso(), "valid": bool(valid)}
+            if hasattr(plugin, "get_last_check_overview"):
+                summary_updates.update(plugin.get_last_check_overview() or {})
+            lifecycle_status = None
+            if valid:
+                lifecycle_status = recover_lifecycle_status_for_valid_account(current_graph)
             patch_account_graph(
                 session,
                 model,
-                lifecycle_status=None if valid else AccountStatus.INVALID.value,
+                lifecycle_status=lifecycle_status,
                 summary_updates=summary_updates,
             )
             session.add(model)
@@ -608,6 +623,40 @@ def execute_task(task_id: str) -> None:
     handler(payload, logger)
 
 
+def _resolve_sms_provider_for_task(extra: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
+    from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+    settings_repo = ProviderSettingsRepository()
+    definitions_repo = ProviderDefinitionsRepository()
+    provider_key = str(
+        extra.get("sms_provider")
+        or extra.get("phone_provider")
+        or settings_repo.get_default_provider_key("sms")
+        or ""
+    ).strip()
+    if not provider_key:
+        provider_key = "sms_activate" if extra.get("sms_activate_api_key") else ""
+    definition = definitions_repo.get_by_key("sms", provider_key) if provider_key else None
+    settings = settings_repo.resolve_runtime_settings("sms", provider_key, extra) if definition else dict(extra)
+    return provider_key, settings
+
+
+def _bool_config(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off", "否"}
+
+
+def _int_config(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     from core.proxy_pool import proxy_pool
 
@@ -617,8 +666,21 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     email = payload.get("email") or None
     password = payload.get("password") or None
     proxy = payload.get("proxy") or None
+    extra = dict(payload.get("extra") or {})
+    sms_provider_key, sms_settings = _resolve_sms_provider_for_task(extra)
+    herosms_enabled = sms_provider_key == "herosms" and bool(str(sms_settings.get("herosms_api_key") or "").strip())
+    hero_extra_max = max(_int_config(sms_settings.get("register_phone_extra_max"), 3), 0) if herosms_enabled else 0
+    hero_reuse_to_max = _bool_config(sms_settings.get("register_reuse_phone_to_max"), True) if herosms_enabled else False
+    target_success = count
+    max_success = count + hero_extra_max if herosms_enabled and hero_reuse_to_max else count
+    progress_total = max_success if herosms_enabled else count
 
-    logger.set_progress(0, count)
+    logger.set_progress(0, progress_total)
+    if herosms_enabled:
+        logger.log(
+            f"HeroSMS 模式: 成功目标 {target_success}，失败自动补尝试，"
+            f"号码仍可复用时最多额外成功 {hero_extra_max} 个"
+        )
 
     try:
         get(platform_name)
@@ -638,7 +700,6 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         from core.base_identity import normalize_identity_provider
         from core.base_mailbox import create_mailbox
 
-        extra = dict(payload.get("extra") or {})
         identity_provider = normalize_identity_provider(extra.get("identity_provider", "mailbox"))
         if identity_provider == "mailbox":
             if not extra.get("mail_provider"):
@@ -706,8 +767,40 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         submitted = 0
         completed = 0
         futures: dict[Any, int] = {}
+        max_attempts = max(count if not herosms_enabled else max_success * 3, 1)
+
+        def _hero_phone_alive() -> bool:
+            if not (herosms_enabled and hero_reuse_to_max):
+                return False
+            try:
+                from core.base_sms import is_herosms_phone_cache_alive
+                alive, info = is_herosms_phone_cache_alive(sms_settings)
+                if alive:
+                    logger.log(
+                        "HeroSMS 号码仍可复用: "
+                        f"{str(info.get('phone_number') or '')[:5]}**** "
+                        f"剩余 {int(info.get('remaining_seconds') or 0)} 秒，"
+                        f"已成功 {int(info.get('use_count') or 0)} 次"
+                    )
+                return bool(alive)
+            except Exception:
+                return False
+
+        def _should_submit_more() -> bool:
+            if submitted >= max_attempts or logger.is_cancel_requested():
+                return False
+            if not herosms_enabled:
+                return submitted < count
+            if success + len(futures) >= max_success:
+                return False
+            if success < target_success:
+                return True
+            if success >= max_success:
+                return False
+            return _hero_phone_alive()
+
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            while submitted < count and len(futures) < concurrency and not logger.is_cancel_requested():
+            while _should_submit_more() and len(futures) < concurrency:
                 futures[pool.submit(_do_one, submitted)] = submitted
                 submitted += 1
 
@@ -717,12 +810,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     futures.pop(future, None)
                     result = future.result()
                     completed += 1
-                    logger.set_progress(completed, count)
                     if result is True:
                         success += 1
                     elif result != "__cancel_requested__":
                         errors.append(str(result))
-                while submitted < count and len(futures) < concurrency and not logger.is_cancel_requested():
+                    logger.set_progress(min(success if herosms_enabled else completed, progress_total), progress_total)
+                while _should_submit_more() and len(futures) < concurrency:
                     futures[pool.submit(_do_one, submitted)] = submitted
                     submitted += 1
                 if logger.is_cancel_requested() and not futures:
@@ -733,6 +826,15 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         _release_local_ms_task_leases()
         return
 
+    if herosms_enabled:
+        logger.set_result_data({
+            "target_count": target_success,
+            "attempts": submitted,
+            "success": success,
+            "fail": len(errors),
+            "extra_success": max(0, success - target_success),
+            "hero_sms_reuse": True,
+        })
     summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
 
     logger.log(summary, event_type="summary")
@@ -799,6 +901,7 @@ def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger)
         q = select(AccountModel)
         if platform:
             q = q.where(AccountModel.platform == platform)
+        q = q.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
         accounts = session.exec(q.limit(limit)).all()
 
     total = len(accounts)

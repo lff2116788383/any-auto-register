@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session, select
 
 from core.datetime_utils import serialize_datetime
+from core.account_display import build_account_display_summary
 from core.db import AccountModel, engine
 from core.account_graph import (
     compute_account_stats,
@@ -54,6 +55,12 @@ def _build_credential_updates(
 def _to_record(model: AccountModel, graph: dict | None = None) -> AccountRecord:
     graph = graph or {}
     overview = graph.get("overview") or {}
+    lifecycle_status = graph.get("lifecycle_status") or "registered"
+    validity_status = graph.get("validity_status") or "unknown"
+    plan_state = graph.get("plan_state") or "unknown"
+    plan_name = graph.get("plan_name") or ""
+    display_status = graph.get("display_status") or "registered"
+    provider_resources = list(graph.get("provider_resources") or [])
     return AccountRecord(
         id=int(model.id or 0),
         platform=model.platform,
@@ -63,15 +70,26 @@ def _to_record(model: AccountModel, graph: dict | None = None) -> AccountRecord:
         primary_token=resolve_primary_token(model, graph),
         trial_end_time=int(overview.get("trial_end_time") or 0),
         cashier_url=str(overview.get("cashier_url") or ""),
-        lifecycle_status=graph.get("lifecycle_status") or "registered",
-        validity_status=graph.get("validity_status") or "unknown",
-        plan_state=graph.get("plan_state") or "unknown",
-        plan_name=graph.get("plan_name") or "",
-        display_status=graph.get("display_status") or "registered",
+        lifecycle_status=lifecycle_status,
+        validity_status=validity_status,
+        plan_state=plan_state,
+        plan_name=plan_name,
+        display_status=display_status,
         overview=overview,
+        display_summary=build_account_display_summary(
+            platform=model.platform,
+            email=model.email,
+            lifecycle_status=lifecycle_status,
+            validity_status=validity_status,
+            plan_state=plan_state,
+            plan_name=plan_name,
+            display_status=display_status,
+            overview=overview,
+            provider_resources=provider_resources,
+        ),
         credentials=list(graph.get("credentials") or []),
         provider_accounts=list(graph.get("provider_accounts") or []),
-        provider_resources=list(graph.get("provider_resources") or []),
+        provider_resources=provider_resources,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

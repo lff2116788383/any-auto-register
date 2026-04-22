@@ -1,4 +1,4 @@
-"""动态代理 IP 提供者 — 从第三方 API 动态获取代理。
+"""动态代理 IP 提供者 — 具体实现已迁移到 providers/proxy/
 
 支持两种模式:
   1. 静态代理: 从数据库读取固定代理列表（现有逻辑）
@@ -10,13 +10,8 @@
 from __future__ import annotations
 
 import logging
-import re
-import threading
-import time
 from abc import ABC, abstractmethod
 from typing import Optional
-
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -31,99 +26,23 @@ class BaseProxyProvider(ABC):
         ...
 
 
-class ApiExtractProvider(BaseProxyProvider):
-    """通用 API 提取模式 — 调用一个 URL 返回代理 IP 列表。
-
-    适用于大多数代理商的"API 提取"接口，返回格式通常是:
-      - 每行一个 IP:PORT
-      - 或 JSON 数组
-    """
-
-    def __init__(
-        self,
-        *,
-        api_url: str,
-        protocol: str = "http",
-        username: str = "",
-        password: str = "",
-        timeout: int = 10,
-    ):
-        self.api_url = api_url
-        self.protocol = protocol or "http"
-        self.username = username
-        self.password = password
-        self.timeout = timeout
-        self._cache: list[str] = []
-        self._lock = threading.Lock()
-
-    def _fetch(self) -> list[str]:
-        """从 API 获取代理列表。"""
-        try:
-            resp = requests.get(self.api_url, timeout=self.timeout)
-            resp.raise_for_status()
-            text = resp.text.strip()
-        except Exception as exc:
-            logger.warning(f"[ProxyProvider] API 请求失败: {exc}")
-            return []
-
-        # Try JSON first
-        try:
-            import json
-            data = json.loads(text)
-            if isinstance(data, list):
-                return [self._normalize(str(item)) for item in data if item]
-            if isinstance(data, dict):
-                # Common patterns: {"data": [...], "proxies": [...], "list": [...]}
-                for key in ("data", "proxies", "list", "proxy_list", "result"):
-                    items = data.get(key)
-                    if isinstance(items, list):
-                        return [self._normalize(str(item)) for item in items if item]
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Fall back to line-by-line parsing
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return [self._normalize(line) for line in lines if self._looks_like_proxy(line)]
-
-    def _looks_like_proxy(self, line: str) -> bool:
-        """Check if a line looks like a proxy address."""
-        # Match IP:PORT, HOST:PORT, or protocol://... patterns
-        if line.startswith(("http://", "https://", "socks5://", "socks4://")):
-            return True
-        return bool(re.match(r'^[\w.\-]+:\d+', line))
-
-    def _normalize(self, raw: str) -> str:
-        """Normalize a raw proxy string to a full URL."""
-        raw = raw.strip()
-        if raw.startswith(("http://", "https://", "socks5://", "socks4://")):
-            return raw
-        # Add protocol and optional auth
-        if self.username and self.password:
-            return f"{self.protocol}://{self.username}:{self.password}@{raw}"
-        return f"{self.protocol}://{raw}"
-
-    def get_proxy(self) -> Optional[str]:
-        with self._lock:
-            if not self._cache:
-                self._cache = self._fetch()
-            if self._cache:
-                return self._cache.pop(0)
-        return None
+# ---------------------------------------------------------------------------
+# Lazy re-exports for backward compatibility
+# (concrete classes now live under providers/proxy/)
+# ---------------------------------------------------------------------------
+_LAZY_IMPORTS = {
+    "ApiExtractProvider": "providers.proxy.api_extract",
+    "RotatingProxyProvider": "providers.proxy.rotating_gateway",
+}
 
 
-class RotatingProxyProvider(BaseProxyProvider):
-    """固定入口旋转代理 — 每次请求自动分配不同 IP。
-
-    适用于提供固定网关地址的代理商（如 BrightData、Oxylabs、IPRoyal 等），
-    格式通常是: http://user:pass@gate.provider.com:port
-    每次通过该网关发出的请求会自动使用不同的出口 IP。
-    """
-
-    def __init__(self, *, gateway_url: str):
-        self.gateway_url = gateway_url
-
-    def get_proxy(self) -> Optional[str]:
-        return self.gateway_url if self.gateway_url else None
+def __getattr__(name: str):
+    module_path = _LAZY_IMPORTS.get(name)
+    if module_path is not None:
+        import importlib
+        mod = importlib.import_module(module_path)
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------

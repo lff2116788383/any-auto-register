@@ -1,6 +1,20 @@
 """Account CRUD endpoint tests."""
 from __future__ import annotations
 
+import base64
+import json
+from datetime import datetime, timedelta, timezone
+
+from application.account_exports import AccountExportsService
+from domain.accounts import AccountCreateCommand, AccountExportSelection
+from infrastructure.accounts_repository import AccountsRepository
+
+
+def _make_jwt(payload: dict) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{header}.{body}.sig"
+
 
 def _create_account(client, **overrides):
     payload = {
@@ -108,3 +122,79 @@ def test_export_any2api_multi_platform(client):
     resp = client.post("/api/accounts/export/any2api", json={"select_all": True})
     assert resp.status_code == 200
     assert "any2api_admin" in resp.headers.get("content-disposition", "")
+
+
+def test_export_cpa_uses_standard_payload_schema():
+    exp_timestamp = 1777166030
+    expected_expired = datetime.fromtimestamp(
+        exp_timestamp, tz=timezone(timedelta(hours=8))
+    ).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    access_token = _make_jwt({
+        "exp": exp_timestamp,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-standard",
+        },
+    })
+    id_token = _make_jwt({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-standard",
+        },
+    })
+    repository = AccountsRepository()
+    repository.create(
+        AccountCreateCommand(
+            platform="chatgpt",
+            email="cpa@test.com",
+            password="TestPass123!",
+            user_id="acct-standard",
+            credentials={
+                "access_token": access_token,
+                "refresh_token": "rt_standard",
+                "id_token": id_token,
+            },
+        )
+    )
+    service = AccountExportsService(repository)
+
+    artifact = service.export_chatgpt_cpa(AccountExportSelection(platform="chatgpt", select_all=True))
+    payload = json.loads(artifact.content)
+    assert list(payload.keys()) == [
+        "access_token",
+        "account_id",
+        "email",
+        "expired",
+        "id_token",
+        "last_refresh",
+        "refresh_token",
+        "type",
+    ]
+    assert payload["access_token"] == access_token
+    assert payload["account_id"] == "acct-standard"
+    assert payload["email"] == "cpa@test.com"
+    assert payload["expired"] == expected_expired
+    assert payload["id_token"] == id_token
+    assert payload["last_refresh"].endswith("+08:00")
+    assert payload["refresh_token"] == "rt_standard"
+    assert payload["type"] == "codex"
+
+
+def test_export_cpa_falls_back_to_stored_user_id_for_account_id():
+    repository = AccountsRepository()
+    repository.create(
+        AccountCreateCommand(
+            platform="chatgpt",
+            email="fallback@test.com",
+            password="TestPass123!",
+            user_id="acct-from-user-id",
+            credentials={
+                "access_token": _make_jwt({"exp": 1777166030}),
+                "refresh_token": "rt_fallback",
+            },
+        )
+    )
+    service = AccountExportsService(repository)
+
+    artifact = service.export_chatgpt_cpa(AccountExportSelection(platform="chatgpt", select_all=True))
+    payload = json.loads(artifact.content)
+    assert payload["account_id"] == "acct-from-user-id"
+    assert payload["refresh_token"] == "rt_fallback"

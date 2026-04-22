@@ -67,25 +67,45 @@ def _mailbox_provider_name(item: AccountRecord) -> str:
     return ""
 
 
+def _chatgpt_auth_info(*tokens: str) -> dict:
+    merged: dict = {}
+    for token in tokens:
+        if not token:
+            continue
+        payload = _decode_jwt_payload(token)
+        auth_info = payload.get("https://api.openai.com/auth", {})
+        if isinstance(auth_info, dict):
+            for key, value in auth_info.items():
+                if value not in (None, "", [], {}):
+                    merged[key] = value
+    return merged
+
+
 def _chatgpt_export_payload(item: AccountRecord) -> dict:
     access_token = _credential_value(item, "access_token", "accessToken", "legacy_token")
     refresh_token = _credential_value(item, "refresh_token", "refreshToken")
     id_token = _credential_value(item, "id_token", "idToken")
     session_token = _credential_value(item, "session_token", "sessionToken")
     workspace_id = _credential_value(item, "workspace_id", "workspaceId")
-    client_id = _credential_value(item, "client_id", "clientId") or DEFAULT_CHATGPT_CLIENT_ID
+    payload = _decode_jwt_payload(access_token) if access_token else {}
+    auth_info = _chatgpt_auth_info(access_token, id_token)
+    client_id = _credential_value(item, "client_id", "clientId") or str(payload.get("client_id", "") or DEFAULT_CHATGPT_CLIENT_ID)
     cookies = _credential_value(item, "cookies", "cookie")
-    account_id = item.user_id or ""
+    account_id = item.user_id or _credential_value(item, "account_id", "chatgpt_account_id") or ""
     email_service = _mailbox_provider_name(item)
 
-    payload = _decode_jwt_payload(access_token) if access_token else {}
-    auth_info = payload.get("https://api.openai.com/auth", {})
     if not account_id:
-        account_id = auth_info.get("chatgpt_account_id", "") or ""
+        account_id = str(auth_info.get("chatgpt_account_id", "") or auth_info.get("account_id", "") or "")
+    if not workspace_id:
+        workspace_id = str(auth_info.get("organization_id", "") or "")
     expires_at = None
     exp_timestamp = payload.get("exp")
     if isinstance(exp_timestamp, int) and exp_timestamp > 0:
         expires_at = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+    last_refresh_at = item.updated_at
+    iat_timestamp = payload.get("iat")
+    if isinstance(iat_timestamp, int) and iat_timestamp > 0:
+        last_refresh_at = datetime.fromtimestamp(iat_timestamp, tz=timezone.utc)
 
     return {
         "id": item.id,
@@ -101,7 +121,7 @@ def _chatgpt_export_payload(item: AccountRecord) -> dict:
         "cookies": cookies,
         "email_service": email_service,
         "registered_at": _isoformat(item.created_at),
-        "last_refresh": _isoformat(item.updated_at),
+        "last_refresh": _isoformat(last_refresh_at),
         "expires_at": _isoformat(expires_at),
         "status": item.display_status,
         "expires_at_unix": int(expires_at.timestamp()) if expires_at else 0,
@@ -115,6 +135,23 @@ def _to_cpa_account(item: AccountRecord) -> SimpleNamespace:
         access_token=payload["access_token"],
         refresh_token=payload["refresh_token"],
         id_token=payload["id_token"],
+        session_token=payload["session_token"],
+        account_id=payload["account_id"],
+        user_id=payload["account_id"],
+        expired=payload["expires_at"],
+        last_refresh=payload["last_refresh"],
+        client_id=payload["client_id"],
+        cookies=payload["cookies"],
+        credentials={
+            "access_token": payload["access_token"],
+            "refresh_token": payload["refresh_token"],
+            "id_token": payload["id_token"],
+            "session_token": payload["session_token"],
+            "account_id": payload["account_id"],
+            "chatgpt_account_id": payload["account_id"],
+            "client_id": payload["client_id"],
+            "cookies": payload["cookies"],
+        },
     )
 
 

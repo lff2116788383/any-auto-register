@@ -150,6 +150,7 @@ class AccountsService:
             "plan_name": item.plan_name,
             "display_status": item.display_status,
             "overview": item.overview,
+            "display_summary": item.display_summary,
             "credentials": item.credentials,
             "provider_accounts": item.provider_accounts,
             "provider_resources": item.provider_resources,

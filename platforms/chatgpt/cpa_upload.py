@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from curl_cffi import requests as cffi_requests
 
 logger = logging.getLogger(__name__)
+CPA_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -54,21 +55,56 @@ def _extract_credential(account, key: str) -> str:
     return ""
 
 
+def _first_text(*values) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _format_cpa_timestamp(value) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, (int, float)):
+            dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        else:
+            text = str(value).strip()
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(CPA_TIMEZONE).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    except Exception:
+        return str(value).strip()
+
+
 def generate_token_json(account) -> dict:
     """生成 CPA 格式的 Token JSON。"""
     email = getattr(account, "email", "")
     access_token = _extract_credential(account, "access_token")
     refresh_token = _extract_credential(account, "refresh_token")
     id_token = _extract_credential(account, "id_token")
+    session_token = _extract_credential(account, "session_token")
 
     logger.info(f"[CPA] email={email}, access_token={'有' if access_token else '空'}"
                 f"({len(access_token)}字符), user_id={getattr(account, 'user_id', '(无)')}")
 
-    expired_str = ""
-    account_id = ""
+    expired_str = _format_cpa_timestamp(
+        getattr(account, "expired", None) or getattr(account, "expires_at", None)
+    )
+    account_id = _first_text(
+        getattr(account, "account_id", None),
+        getattr(account, "chatgpt_account_id", None),
+        getattr(account, "user_id", None),
+        _extract_credential(account, "account_id"),
+        _extract_credential(account, "chatgpt_account_id"),
+    )
 
     # 1) 从 id_token 解析 account_id (参考项目的做法)
-    if id_token:
+    if not account_id and id_token:
         payload = _decode_jwt_payload(id_token)
         auth_info = payload.get("https://api.openai.com/auth", {})
         account_id = auth_info.get("chatgpt_account_id", "")
@@ -82,20 +118,13 @@ def generate_token_json(account) -> dict:
         logger.info(f"[CPA] access_token chatgpt_account_id={account_id or '(空)'}, "
                      f"auth_keys={list(auth_info.keys())}")
     # expired 从 access_token 的 exp 计算
-    expired_str = ""
-    if access_token:
+    if not expired_str and access_token:
         payload = _decode_jwt_payload(access_token)
         exp_timestamp = payload.get("exp")
         if isinstance(exp_timestamp, int) and exp_timestamp > 0:
             exp_dt = datetime.fromtimestamp(
-                exp_timestamp, tz=timezone(timedelta(hours=8)))
+                exp_timestamp, tz=CPA_TIMEZONE)
             expired_str = exp_dt.strftime("%Y-%m-%dT%H:%M:%S+08:00")
-
-    # 2) fallback: account 对象的 user_id
-    if not account_id:
-        account_id = getattr(account, "user_id", "") or ""
-        if account_id:
-            logger.info(f"[CPA] 使用 user_id fallback: {account_id}")
 
     # 3) fallback: /backend-api/me (用 access_token 调)
     if not account_id and access_token:
@@ -124,7 +153,6 @@ def generate_token_json(account) -> dict:
 
     # 4) fallback: session_token 刷新拿新 access_token
     if not account_id:
-        session_token = _extract_credential(account, "session_token")
         if session_token:
             logger.info("[CPA] 尝试 session_token 刷新获取 account_id")
             try:
@@ -147,7 +175,7 @@ def generate_token_json(account) -> dict:
                             exp2 = p2.get("exp")
                             if isinstance(exp2, int) and exp2 > 0:
                                 expired_str = datetime.fromtimestamp(
-                                    exp2, tz=timezone(timedelta(hours=8))
+                                    exp2, tz=CPA_TIMEZONE
                                 ).strftime("%Y-%m-%dT%H:%M:%S+08:00")
             except Exception as e:
                 logger.error(f"[CPA] session 刷新失败: {e}")
@@ -155,16 +183,24 @@ def generate_token_json(account) -> dict:
     if not account_id:
         logger.warning("[CPA] ⚠️ account_id 最终为空! CPA 上传将失败")
 
-    now = datetime.now(tz=timezone(timedelta(hours=8)))
+    last_refresh = _format_cpa_timestamp(getattr(account, "last_refresh", None))
+    if not last_refresh and access_token:
+        payload = _decode_jwt_payload(access_token)
+        iat_timestamp = payload.get("iat")
+        if isinstance(iat_timestamp, int) and iat_timestamp > 0:
+            last_refresh = _format_cpa_timestamp(iat_timestamp)
+    if not last_refresh:
+        last_refresh = datetime.now(tz=CPA_TIMEZONE).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+
     return {
-        "type": "codex",
+        "access_token": access_token,
+        "account_id": account_id,
         "email": email,
         "expired": expired_str,
         "id_token": id_token,
-        "account_id": account_id,
-        "access_token": access_token,
-        "last_refresh": now.strftime("%Y-%m-%dT%H:%M:%S+08:00"),
+        "last_refresh": last_refresh,
         "refresh_token": refresh_token,
+        "type": "codex",
     }
 
 

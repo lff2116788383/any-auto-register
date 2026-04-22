@@ -9,6 +9,8 @@ export type ProviderField = {
   placeholder?: string
   secret?: boolean
   category?: string
+  type?: 'text' | 'select' | 'textarea'
+  options?: Array<{ value: string; label: string }>
 }
 
 export type ProviderOption = {
@@ -42,10 +44,13 @@ export type CaptchaPolicy = {
 export type ConfigOptionsResponse = {
   mailbox_providers: ProviderOption[]
   captcha_providers: ProviderOption[]
+  sms_providers?: ProviderOption[]
   mailbox_drivers?: ProviderDriver[]
   captcha_drivers?: ProviderDriver[]
+  sms_drivers?: ProviderDriver[]
   mailbox_settings?: ProviderSetting[]
   captcha_settings?: ProviderSetting[]
+  sms_settings?: ProviderSetting[]
   captcha_policy?: CaptchaPolicy
   executor_options?: ChoiceOption[]
   identity_mode_options?: ChoiceOption[]
