@@ -271,20 +271,35 @@ class TurnstileAPIServer:
         url = route.request.url
         resource_type = route.request.resource_type
 
-        allowed_types = {'document', 'script', 'xhr', 'fetch'}
+        allowed_types = {'document', 'script', 'xhr', 'fetch', 'stylesheet'}
 
         allowed_domains = [
             'challenges.cloudflare.com',
             'static.cloudflareinsights.com',
-            'cloudflare.com'
+            'cloudflare.com',
         ]
-        
-        if resource_type in allowed_types:
+
+        blocked_types = {'media', 'font', 'websocket', 'eventsource', 'manifest'}
+        blocked_domains = [
+            'sentry.io',
+            'google-analytics.com',
+            'googletagmanager.com',
+            'ads.linkedin.com',
+            'px.ads.linkedin.com',
+        ]
+
+        if any(domain in url for domain in blocked_domains):
+            await route.abort()
+        elif resource_type in blocked_types:
+            await route.abort()
+        elif resource_type in allowed_types:
             await route.continue_()
         elif any(domain in url for domain in allowed_domains):
-            await route.continue_() 
-        else:
+            await route.continue_()
+        elif resource_type == 'image':
             await route.abort()
+        else:
+            await route.continue_()
 
     async def _block_rendering(self, page):
         """Блокировка рендеринга для экономии ресурсов"""
@@ -747,9 +762,9 @@ class TurnstileAPIServer:
         """)
         
         if self.browser_type in ['chromium', 'chrome', 'msedge']:
-            await page.set_viewport_size({"width": 500, "height": 100})
+            await page.set_viewport_size({"width": 1280, "height": 720})
             if self.debug:
-                logger.debug(f"Browser {index}: Set viewport size to 500x240")
+                logger.debug(f"Browser {index}: Set viewport size to 1280x720")
 
         start_time = time.time()
 
@@ -761,7 +776,7 @@ class TurnstileAPIServer:
             if self.debug:
                 logger.debug(f"Browser {index}: Loading real website directly: {url}")
 
-            await page.goto(url, wait_until='networkidle', timeout=30000)
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
 
             await self._unblock_rendering(page)
             

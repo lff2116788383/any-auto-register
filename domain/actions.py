@@ -17,6 +17,7 @@ class PlatformAction:
     id: str
     label: str
     params: list[ActionParameter] = field(default_factory=list)
+    sync: bool = False
 
 
 @dataclass(slots=True)

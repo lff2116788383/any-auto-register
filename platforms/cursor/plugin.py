@@ -20,6 +20,16 @@ class CursorPlatform(BasePlatform):
     name = "cursor"
     display_name = "Cursor"
     version = "1.0.0"
+    supported_executors = ["protocol", "headless", "headed"]
+    supported_identity_modes = ["mailbox"]
+    protocol_captcha_order = ("2captcha", "capsolver", "auto")
+
+    # Declarative capabilities
+    capabilities = [
+        "switch_desktop",   # Switch to desktop app
+        "query_state",      # Query account state/quota
+        "generate_link",    # Generate trial link
+    ]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)

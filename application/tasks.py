@@ -657,6 +657,66 @@ def _int_config(value: Any, default: int) -> int:
         return default
 
 
+def _auto_followup_windsurf_payment(
+    *,
+    platform_name: str,
+    payload: dict[str, Any],
+    platform,
+    account,
+    logger: "TaskLogger",
+) -> None:
+    if platform_name != "windsurf":
+        return
+    executor_type = str(payload.get("executor_type", "") or "").strip()
+    use_browser = executor_type in {"headless", "headed"}
+    if not use_browser:
+        extra_cfg = dict(payload.get("extra") or {})
+        if not _bool_config(extra_cfg.get("auto_payment_link"), True):
+            return
+    if not str(getattr(account, "password", "") or "").strip() and use_browser:
+        logger.log("Windsurf 注册后自动升级已跳过: 账号缺少密码", level="error")
+        return
+    extra = dict(payload.get("extra") or {})
+    turnstile_token = str(extra.get("turnstile_token") or "").strip()
+    if use_browser:
+        action_id = "payment_link_browser"
+        params = {
+            "timeout": _int_config(extra.get("windsurf_payment_timeout"), 240),
+            "headless": "true" if _bool_config(extra.get("windsurf_payment_headless"), False) else "false",
+            "payment_channel": "checkout",
+        }
+        if turnstile_token:
+            params["turnstile_token"] = turnstile_token
+    else:
+        action_id = "payment_link"
+        params = {}
+        if turnstile_token:
+            params["turnstile_token"] = turnstile_token
+    logger.log("注册成功，开始自动生成 Windsurf Pro Trial Stripe 链接")
+    try:
+        result = platform.execute_action(action_id, account, params)
+    except Exception as exc:
+        message = f"Windsurf 注册后自动升级失败: {exc}"
+        logger.record_error(message)
+        logger.log(message, level="error")
+        return
+    if not result.get("ok"):
+        message = f"Windsurf 注册后自动升级失败: {result.get('error') or 'unknown error'}"
+        logger.record_error(message)
+        logger.log(message, level="error")
+        return
+    data = dict(result.get("data") or {})
+    if data:
+        merged_extra = dict(getattr(account, "extra", {}) or {})
+        merged_extra.update(data)
+        account.extra = merged_extra
+        save_account(account)
+    cashier_url = str(data.get("cashier_url") or data.get("url") or "").strip()
+    if cashier_url:
+        logger.log(f"Windsurf 自动升级链接已生成: {cashier_url}")
+        logger.add_cashier_url(cashier_url)
+
+
 def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     from core.proxy_pool import proxy_pool
 
@@ -740,6 +800,13 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 logger.log(f"使用代理: {resolved_proxy}")
             account = platform.register(email=email, password=password)
             save_account(account)
+            _auto_followup_windsurf_payment(
+                platform_name=platform_name,
+                payload=payload,
+                platform=platform,
+                account=account,
+                logger=logger,
+            )
             if resolved_proxy:
                 proxy_pool.report_success(resolved_proxy)
             logger.record_success()

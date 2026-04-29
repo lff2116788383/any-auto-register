@@ -1,6 +1,7 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { getPlatforms } from '@/lib/app-data'
+import { getAuthToken, setAuthToken, API } from '@/lib/utils'
 import Dashboard from '@/pages/Dashboard'
 import Accounts from '@/pages/Accounts'
 import Register from '@/pages/Register'
@@ -180,15 +181,94 @@ function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void 
   )
 }
 
+function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
+  const [pw, setPw] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch(API + '/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setAuthToken(data.token || '')
+        onLogin(data.token || '')
+      } else {
+        setError(data.error || '密码错误')
+      }
+    } catch {
+      setError('请求失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex h-screen items-center justify-center bg-[var(--bg-base)]">
+      <form onSubmit={submit} className="w-80 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-lg">
+        <h1 className="mb-1 text-lg font-semibold text-[var(--text-primary)]">Account Manager</h1>
+        <p className="mb-5 text-xs text-[var(--text-muted)]">请输入访问密码</p>
+        <input
+          type="password"
+          value={pw}
+          onChange={e => setPw(e.target.value)}
+          placeholder="密码"
+          autoFocus
+          className="control-surface mb-3 w-full"
+        />
+        {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading || !pw}
+          className="w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {loading ? '验证中...' : '登 录'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  const [authState, setAuthState] = useState<'loading' | 'open' | 'locked' | 'authed'>('loading')
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light')
     localStorage.setItem('theme', theme)
   }, [theme])
 
+  useEffect(() => {
+    fetch(API + '/auth/check')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.required) {
+          setAuthState('open')
+        } else if (getAuthToken()) {
+          setAuthState('authed')
+        } else {
+          setAuthState('locked')
+        }
+      })
+      .catch(() => setAuthState('open'))
+  }, [])
+
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+
+  if (authState === 'loading') {
+    return <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-[var(--text-muted)] text-sm">加载中...</div>
+  }
+
+  if (authState === 'locked') {
+    return <LoginScreen onLogin={() => setAuthState('authed')} />
+  }
 
   return (
     <BrowserRouter>

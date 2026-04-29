@@ -7,7 +7,9 @@ services:
     environment:
       - DISPLAY=:99
       - ACCOUNT_MANAGER_DATABASE_URL=sqlite:////app/data/account_manager.db
-      # 可选：设置 VNC 密码，不设置则无密码
+      # 可选：设置访问密码，不设置则无密码保护
+      # - APP_PASSWORD=changeme
+      # 可选：设置 VNC 密码
       # - VNC_PASSWORD=changeme
     volumes:
       - ./data:/app/data   # 持久化 SQLite 数据库

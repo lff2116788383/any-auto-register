@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, WalletCards, ShieldCheck, Inbox, ScanSearch, Trash2 } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', trial: 'success', subscribed: 'success',
@@ -157,13 +157,30 @@ async function loadPlatformActions(platform: string, options?: { force?: boolean
   return pending
 }
 
+async function loadPlatformCapabilities(platform: string, options?: { force?: boolean }) {
+  const key = String(platform || '').trim()
+  if (!key) return []
+  const force = Boolean(options?.force)
+  
+  try {
+    const data = await apiFetch(`/actions/${key}/capabilities`)
+    return Array.isArray(data) ? data : []
+  } catch (error) {
+    console.warn('Failed to load capabilities, falling back to actions')
+    // Fallback to actions for backward compatibility
+    const actions = await loadPlatformActions(platform, options)
+    return actions.map(action => action.id)
+  }
+}
+
+
 function buildActionParamDraft(action: any, acc: any) {
   const params = Array.isArray(action?.params) ? action.params : []
-  const emailPrefix = String(acc?.email || '').split('@')[0] || '开发'
+  const emailPrefix = String(acc?.email || '').split('@')[0] || 'Development'
   const draft: Record<string, string> = {}
   params.forEach((param: any) => {
     if (action?.id === 'create_api_key' && param?.key === 'name') {
-      draft[param.key] = `${emailPrefix}开发`
+      draft[param.key] = `${emailPrefix}Development`
       return
     }
     draft[param?.key || ''] = ''
@@ -974,6 +991,41 @@ function ActionMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
+  const runAction = (action: any, params: Record<string, any>) => {
+    setRunning(action.id)
+    setActionTaskStatus(null)
+    apiFetch(`/actions/${acc.platform}/${acc.id}/${action.id}`, { method: 'POST', body: JSON.stringify({ params }) })
+      .then(resp => {
+        if (resp?.sync) {
+          setRunning(null)
+          if (!resp.ok) {
+            setToast({ type: 'error', text: resp.error || 'Operation failed' })
+            return
+          }
+          onChanged()
+          if (resp.data?.url || resp.data?.checkout_url || resp.data?.cashier_url) {
+            const actionUrl = resp.data?.url || resp.data?.checkout_url || resp.data?.cashier_url
+            window.open(actionUrl, '_blank')
+            try {
+              navigator.clipboard.writeText(actionUrl)
+            } catch {
+              // Ignore clipboard errors
+            }
+          }
+          onResult(action.label, resp.data)
+          return
+        }
+        setActionTask({
+          taskId: resp.task_id,
+          title: `${acc.email} · ${action.label}`,
+        })
+      })
+      .catch(() => {
+        setRunning(null)
+        setToast({ type: 'error', text: 'Request failed' })
+      })
+  }
+
   const updateMenuPosition = useCallback(() => {
     const trigger = triggerRef.current
     if (!trigger) return
@@ -1045,27 +1097,6 @@ function ActionMenu({
     }
   }, [open, acc.platform, updateMenuPosition])
 
-  const runAction = (action: any, params: Record<string, any>) => {
-    setRunning(action.id)
-    setActionTaskStatus(null)
-    apiFetch(`/actions/${acc.platform}/${acc.id}/${action.id}`, { method: 'POST', body: JSON.stringify({ params }) })
-      .then(task => {
-        if (!task?.task_id) {
-          setRunning(null)
-          setToast({ type: 'error', text: '任务创建失败' })
-          return
-        }
-        setActionTask({
-          taskId: task.task_id,
-          title: `${acc.email} · ${action.label}`,
-        })
-      })
-      .catch(() => {
-        setRunning(null)
-        setToast({ type: 'error', text: '请求失败' })
-      })
-  }
-
   const handleActionDone = async (status: string) => {
     if (!actionTask) return
     setActionTaskStatus(status)
@@ -1108,10 +1139,17 @@ function ActionMenu({
   return (
     <div className="relative flex min-w-[136px] items-center justify-end gap-1.5 whitespace-nowrap">
       {toast && (
-        <div className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium animate-in fade-in slide-in-from-top-2 ${
-          toast.type === 'success' ? 'bg-emerald-500/90 text-white' : 'bg-red-500/90 text-white'
-        }`} onClick={() => setToast(null)}>
-          {toast.type === 'success' ? '✓ ' : '✗ '}{toast.text}
+        <div
+          className="fixed top-5 right-5 z-[9999] flex items-center gap-2.5 rounded-xl border px-4 py-3 text-[13px] font-medium shadow-lg backdrop-blur-xl cursor-pointer transition-all"
+          style={{
+            background: toast.type === 'success' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
+            borderColor: toast.type === 'success' ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)',
+            color: toast.type === 'success' ? '#6ee7b7' : '#fca5a5',
+          }}
+          onClick={() => setToast(null)}
+        >
+          <span className="text-base">{toast.type === 'success' ? '✓' : '✗'}</span>
+          <span>{toast.text}</span>
         </div>
       )}
       {actionTask && (
@@ -1555,6 +1593,9 @@ export default function Accounts() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [batchRefreshing, setBatchRefreshing] = useState(false)
+  const [batchTask, setBatchTask] = useState<{ taskId: string; title: string } | null>(null)
+  const [batchTaskStatus, setBatchTaskStatus] = useState<string | null>(null)
 
   useEffect(() => {
     getPlatforms().then((list: any[]) => {
@@ -1596,6 +1637,7 @@ export default function Accounts() {
     })
   }, [accounts])
 
+  
   const exportCsv = () => {
     const header = 'email,password,display_status,lifecycle_status,plan_state,validity_status,cashier_url,created_at'
     const rowsSource = selectedIds.size > 0 ? accounts.filter(a => selectedIds.has(a.id)) : accounts
@@ -1655,158 +1697,200 @@ export default function Accounts() {
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
+      {batchTask && (
+        <ActionTaskModal
+          title={batchTask.title}
+          taskId={batchTask.taskId}
+          taskStatus={batchTaskStatus}
+          onClose={() => {
+            setBatchTask(null)
+            setBatchTaskStatus(null)
+            setBatchRefreshing(false)
+            load()
+          }}
+          onDone={(status) => {
+            setBatchTaskStatus(status)
+            setBatchRefreshing(false)
+            load()
+          }}
+        />
+      )}
 
-      <div className="grid shrink-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <WorkspaceMetric label="账号数" value={total} icon={WalletCards} />
-        <WorkspaceMetric label="验证码邮箱" value={verificationBacked} icon={Inbox} />
-        <WorkspaceMetric label="已订阅" value={visibleSubscribed} icon={ShieldCheck} />
-        <WorkspaceMetric label="可操作" value={linkedCashier} icon={ScanSearch} />
-      </div>
-
-      <Card className="shrink-0 bg-[var(--bg-pane)]/60">
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="text-sm font-semibold text-[var(--text-primary)]">{platformLabel}</div>
-              <Badge variant="secondary">{total} 条</Badge>
-              {selectedCount > 0 ? <Badge variant="default">已选 {selectedCount}</Badge> : null}
-              <Badge variant="success">试用 {visibleTrial}</Badge>
-              <Badge variant="default">订阅 {visibleSubscribed}</Badge>
-              <Badge variant="warning">链接 {linkedCashier}</Badge>
-              <Badge variant={visibleInvalid > 0 ? 'danger' : 'secondary'}>失效 {visibleInvalid}</Badge>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => setShowRegister(true)}>
-                <Plus className="mr-1.5 h-3.5 w-3.5" />
-                自动注册
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setShowImport(true)}>
-                <Upload className="mr-1.5 h-3.5 w-3.5" />
-                导入
-              </Button>
-              {tab === 'chatgpt' || tab === 'kiro' ? (
-                <ExportMenu
-                  platform={tab}
-                  total={total}
-                  statusFilter={filterStatus}
-                  searchFilter={debouncedSearch}
-                  selectedIds={[...selectedIds]}
-                />
-              ) : (
-                <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0}>
-                  <Download className="mr-1.5 h-3.5 w-3.5" />
-                  导出
-                </Button>
-              )}
-              <Button size="sm" variant="outline" onClick={() => setShowAdd(true)}>手动新增</Button>
-              <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}>
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-              </Button>
-              {selectedCount > 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={bulkDeleting}
-                  className="!border-red-500/30 !text-[#f0b0b0] hover:!bg-red-500/10 hover:!text-[#ffd5d5]"
-                  onClick={async () => {
-                    if (!confirm(`确认删除选中的 ${selectedCount} 个账号？此操作不可撤销。`)) return
-                    setBulkDeleting(true)
-                    try {
-                      await Promise.allSettled(
-                        [...selectedIds].map(id => apiFetch(`/accounts/${id}`, { method: 'DELETE' }))
-                      )
-                      setSelectedIds(new Set())
-                      load()
-                    } finally {
-                      setBulkDeleting(false)
-                    }
-                  }}
-                >
-                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                  {bulkDeleting ? '删除中...' : `删除(${selectedCount})`}
-                </Button>
-              )}
+      <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-5 py-4 border-b border-[var(--border)]/50">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
+              {platformLabel}
+            </h1>
+            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-[var(--text-muted)]">共 {total} 个</span>
+              {visibleTrial > 0 && <span className="flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-500 ring-1 ring-inset ring-emerald-500/20">试用 {visibleTrial}</span>}
+              {visibleSubscribed > 0 && <span className="flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-500 ring-1 ring-inset ring-blue-500/20">订阅 {visibleSubscribed}</span>}
+              {linkedCashier > 0 && <span className="flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-500 ring-1 ring-inset ring-amber-500/20">链接 {linkedCashier}</span>}
+              {visibleInvalid > 0 && <span className="flex items-center rounded-full bg-red-500/10 px-2 py-0.5 font-medium text-red-500 ring-1 ring-inset ring-red-500/20">失效 {visibleInvalid}</span>}
+              {selectedCount > 0 && <span className="flex items-center rounded-full bg-[var(--text-primary)]/10 px-2 py-0.5 font-medium text-[var(--text-primary)] ring-1 ring-inset ring-[var(--text-primary)]/20">已选 {selectedCount}</span>}
             </div>
           </div>
-
-          <div className="grid gap-3 md:grid-cols-[minmax(220px,320px)_220px_auto]">
-            <div>
-              <label className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">邮箱搜索</label>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 shadow-sm">
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              自动注册
+            </Button>
+            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
+            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="h-8 bg-transparent">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              导入
+            </Button>
+            {tab === 'chatgpt' || tab === 'kiro' ? (
+              <ExportMenu
+                platform={tab}
+                total={total}
+                statusFilter={filterStatus}
+                searchFilter={debouncedSearch}
+                selectedIds={[...selectedIds]}
+              />
+            ) : (
+              <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0} className="h-8 bg-transparent">
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                导出
+              </Button>
+            )}
+            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="h-8 bg-transparent">
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              手动新增
+            </Button>
+          </div>
+        </div>
+        
+        {/* Search & Filter Toolbar */}
+        <div className="flex items-center justify-between gap-4 px-5 py-2.5 bg-[var(--bg-pane)]/20">
+          <div className="flex flex-1 items-center gap-3">
+            <div className="relative flex-1 max-w-sm">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-[var(--text-muted)]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+              </div>
               <input
                 type="text"
-                placeholder="按邮箱搜索当前平台账号"
+                placeholder="搜索账号邮箱..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="control-surface control-surface-compact"
+                className="w-full rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-8 pr-3 text-sm text-[var(--text-primary)] transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)]"
               />
             </div>
-            <div>
-              <label className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">状态筛选</label>
-              <select
-                value={filterStatus}
-                onChange={e => setFilterStatus(e.target.value)}
-                className="control-surface control-surface-compact appearance-none"
+            <select
+              value={filterStatus}
+              onChange={e => setFilterStatus(e.target.value)}
+              className="rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundPosition: 'right 8px center', backgroundRepeat: 'no-repeat' }}
+            >
+              <option value="">全部状态</option>
+              <option value="registered">已注册</option>
+              <option value="trial">试用中</option>
+              <option value="subscribed">已订阅</option>
+              <option value="free">免费</option>
+              <option value="eligible">可试用</option>
+              <option value="expired">已过期</option>
+              <option value="invalid">已失效</option>
+            </select>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={batchRefreshing || loading}
+              className="h-7 px-2.5 text-[var(--text-muted)] hover:text-amber-500 hover:bg-amber-500/10"
+              title="一键刷新全部账号额度"
+              onClick={async () => {
+                setBatchRefreshing(true)
+                try {
+                  const res = await apiFetch(`/accounts/check-all?platform=${tab}`, { method: 'POST' })
+                  if (res?.task_id) {
+                    setBatchTask({ taskId: res.task_id, title: `刷新全部 ${platformLabel} 账号额度` })
+                    setBatchTaskStatus(null)
+                  }
+                } catch (e) {
+                  console.error(e)
+                  setBatchRefreshing(false)
+                }
+              }}
+            >
+              <Zap className={`mr-1 h-3.5 w-3.5 ${batchRefreshing ? 'animate-pulse' : ''}`} />
+              {batchRefreshing ? '刷新中...' : '刷新额度'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => load()} disabled={loading} className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+            {selectedCount > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={bulkDeleting}
+                className="h-7 px-2.5 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                onClick={async () => {
+                  if (!confirm(`确认删除选中的 ${selectedCount} 个账号？此操作不可撤销。`)) return
+                  setBulkDeleting(true)
+                  try {
+                    await Promise.allSettled(
+                      [...selectedIds].map(id => apiFetch(`/accounts/${id}`, { method: 'DELETE' }))
+                    )
+                    setSelectedIds(new Set())
+                    load()
+                  } finally {
+                    setBulkDeleting(false)
+                  }
+                }}
               >
-                <option value="">全部状态</option>
-                <option value="registered">已注册</option>
-                <option value="trial">试用中</option>
-                <option value="subscribed">已订阅</option>
-                <option value="free">免费</option>
-                <option value="eligible">可试用</option>
-                <option value="expired">已过期</option>
-                <option value="invalid">已失效</option>
-              </select>
-            </div>
-            <div className="flex flex-wrap items-end gap-2">
-              <Badge variant="secondary">{total} 账号</Badge>
-              {debouncedSearch ? <Badge variant="default">搜索中</Badge> : null}
-              {filterStatus ? <Badge variant="warning">{filterStatus}</Badge> : null}
-              {selectedCount > 0 ? <Badge variant="success">已选 {selectedCount}</Badge> : null}
-            </div>
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                {bulkDeleting ? '删除中...' : `删除`}
+              </Button>
+            )}
           </div>
         </div>
       </Card>
 
-      <Card className="min-h-0 flex-1 overflow-hidden p-0">
+      <Card className="min-h-0 flex-1 overflow-hidden p-0 border border-[var(--border)] shadow-sm">
         <div className="flex h-full min-h-0 flex-col">
-          <div className="shrink-0 border-b border-[var(--border)] px-5 py-4">
-            <div className="text-sm font-medium text-[var(--text-primary)]">{platformLabel} 账号清单</div>
-          </div>
           <div className="glass-table-wrap min-h-0 flex-1 overflow-auto">
-        <table className="table-fixed w-full min-w-[1180px] text-sm">
+        <table className="table-fixed w-full min-w-[900px] text-sm">
           <colgroup>
             <col className="w-10" />
-            <col className="w-[31%]" />
-            <col className="w-[14%]" />
-            <col className="w-[21%]" />
+            <col className="w-[30%]" />
+            <col className="w-[12%]" />
+            <col className="w-[26%]" />
             <col className="w-[8%]" />
-            <col className="w-[10%]" />
-            <col className="w-[16%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
           </colgroup>
-          <thead className="sticky top-0 z-10">
-            <tr className="border-b border-[var(--border)] text-[var(--text-muted)]">
-              <th className="w-10 bg-[var(--bg-card)] px-4 py-2.5 text-left">
+          <thead className="sticky top-0 z-10 backdrop-blur-sm bg-[var(--bg-pane)]/80">
+            <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider font-medium text-[var(--text-muted)]">
+              <th className="w-10 px-3 py-2 text-left">
                 <input
                   type="checkbox"
                   checked={allSelectedOnPage}
                   onChange={togglePage}
-                  className="checkbox-accent"
+                  className="checkbox-accent rounded-[3px] border-[var(--border)] focus:ring-[var(--text-primary)] focus:ring-offset-0 bg-transparent text-[var(--text-primary)]"
                 />
               </th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">邮箱</th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">密码</th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">状态</th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">试用链接</th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-left">注册时间</th>
-              <th className="bg-[var(--bg-card)] px-4 py-2.5 text-right">操作</th>
+              <th className="px-3 py-2 text-left">邮箱 (Email)</th>
+              <th className="px-3 py-2 text-left">密码 (Pwd)</th>
+              <th className="px-3 py-2 text-left">状态 (Status)</th>
+              <th className="px-3 py-2 text-left">试用链接 (Link)</th>
+              <th className="px-3 py-2 text-left">注册时间 (Date)</th>
+              <th className="px-3 py-2 text-right">操作 (Action)</th>
             </tr>
           </thead>
           <tbody>
             {accounts.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8">
-                  <div className="empty-state-panel">
-                    当前筛选下没有账号记录。你可以直接自动注册、手动新增或导入已有账号。
+                <td colSpan={7} className="px-4 py-24 text-center">
+                  <div className="flex flex-col items-center justify-center space-y-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--bg-pane)] border border-[var(--border)] shadow-sm">
+                      <svg className="h-6 w-6 text-[var(--text-muted)]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" /></svg>
+                    </div>
+                    <h3 className="text-sm font-medium text-[var(--text-primary)]">暂无数据</h3>
+                    <p className="text-xs text-[var(--text-muted)] max-w-sm">当前平台没有找到任何账号记录。您可以手动新增或通过导入文件批量添加账号。</p>
                   </div>
                 </td>
               </tr>
@@ -1818,62 +1902,86 @@ export default function Accounts() {
                 const primaryMetrics = getPrimaryMetrics(acc)
                 const displayBadges = getDisplayBadges(acc)
                 return (
-              <tr key={acc.id} className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-hover)]/70 transition-colors cursor-pointer"
+              <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors cursor-pointer"
                   onClick={() => setDetail(acc)}>
-                <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
+                <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={selectedIds.has(acc.id)}
                     onChange={() => toggleOne(acc.id)}
-                    className="checkbox-accent"
+                    className="checkbox-accent rounded-[3px] border-[var(--border)] focus:ring-[var(--text-primary)] focus:ring-offset-0 bg-transparent text-[var(--text-primary)] transition-all opacity-40 group-hover:opacity-100 data-[state=checked]:opacity-100"
                   />
                 </td>
-                <td className="px-4 py-2.5 font-mono text-xs align-top">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <span className="truncate" title={acc.email}>{acc.email}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(acc.email) }} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)]"><Copy className="h-3 w-3" /></button>
+                <td className="px-3 py-2.5 font-mono text-sm text-[var(--text-primary)] align-top">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate tracking-tight" title={acc.email}>{acc.email}</span>
+                    <button onClick={e => { e.stopPropagation(); copy(acc.email) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
                   </div>
                   {verificationMailbox && (verificationMailbox.email || verificationMailbox.account_id || verificationMailbox.provider) && (
                     <div
-                      className="mt-1 truncate text-[11px] text-[var(--text-muted)]"
-                      title={`验证码邮箱: ${verificationMailbox.email || '-'} · ${verificationMailbox.provider || '-'} · ID ${verificationMailbox.account_id || '-'}`}
+                      className="mt-1 truncate text-xs text-[var(--text-muted)] flex items-center gap-1"
+                      title={`验证邮箱: ${verificationMailbox.email || '-'} · ${verificationMailbox.provider || '-'}`}
                     >
-                      验证码邮箱: {verificationMailbox.email || '-'} · {verificationMailbox.provider || '-'} · ID {verificationMailbox.account_id || '-'}
+                      <svg className="w-3 h-3 opacity-60 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+                      <span className="truncate">{verificationMailbox.email || '-'}</span>
                     </div>
                   )}
                   {overview?.remote_email && overview.remote_email !== acc.email && (
-                    <div className="mt-1 truncate text-[11px] text-[var(--text-muted)]" title={`远端邮箱: ${overview.remote_email}`}>
+                    <div className="mt-1 truncate text-xs text-[var(--text-muted)]" title={`远端邮箱: ${overview.remote_email}`}>
                       远端邮箱: {overview.remote_email}
                     </div>
                   )}
                   {displayBadges.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
+                    <div className="mt-1.5 flex flex-wrap gap-1">
                       {displayBadges.slice(0, 3).map((badge: any, index: number) => (
-                        <span key={`${badge?.label || 'badge'}-${index}`} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        <span key={`${badge?.label || 'badge'}-${index}`} className="rounded border border-[var(--border)]/50 bg-[var(--bg-pane)]/40 px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] shadow-sm">
                           {badge?.label}
                         </span>
                       ))}
                     </div>
                   )}
                 </td>
-                <td className="px-4 py-2.5 font-mono text-xs text-[var(--text-muted)] align-top">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <span className="truncate blur-sm transition-all cursor-default hover:blur-none" title={acc.password}>{acc.password}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(acc.password) }} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)]"><Copy className="h-3 w-3" /></button>
+                <td className="px-3 py-2.5 font-mono text-[13px] text-[var(--text-muted)] align-top">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate blur-[3px] transition-all cursor-default hover:blur-none select-none hover:select-auto hover:text-[var(--text-primary)]" title={acc.password}>{acc.password}</span>
+                    <button onClick={e => { e.stopPropagation(); copy(acc.password) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
                   </div>
                 </td>
-                <td className="px-4 py-2.5 align-top">
-                  <div className="min-w-0 space-y-1">
-                    <Badge variant={STATUS_VARIANT[getDisplayStatus(acc)] || 'secondary'}>{getDisplayStatus(acc)}</Badge>
+                <td className="px-3 py-2.5 align-top">
+                  <div className="min-w-0 flex flex-col items-start gap-1.5">
+                    {(() => {
+                      const status = getDisplayStatus(acc);
+                      const variant = String(STATUS_VARIANT[status] || 'secondary');
+                      const styles = (({
+                        success: "bg-emerald-500/10 text-emerald-500 ring-emerald-500/20",
+                        warning: "bg-amber-500/10 text-amber-500 ring-amber-500/20",
+                        danger: "bg-red-500/10 text-red-500 ring-red-500/20",
+                        secondary: "bg-[var(--text-primary)]/5 text-[var(--text-secondary)] ring-[var(--border)]",
+                        default: "bg-blue-500/10 text-blue-500 ring-blue-500/20"
+                      } as Record<string, string>)[variant]) || "bg-[var(--text-primary)]/5 text-[var(--text-secondary)] ring-[var(--border)]";
+                      
+                      return (
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${styles}`}>
+                          <span className={`mr-1 h-1 w-1 rounded-full ${variant === 'success' ? 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.6)]' : variant === 'warning' ? 'bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.6)]' : variant === 'danger' ? 'bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.6)]' : variant === 'default' ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
+                          {status}
+                        </span>
+                      );
+                    })()}
                     {primaryMetrics.length > 0 ? (
-                      <div className="mt-1 flex max-w-full flex-wrap gap-1.5">
+                      <div className="flex max-w-full flex-col gap-1">
                         {primaryMetrics.slice(0, 2).map((metric: any) => (
-                          <DisplayMetricPill key={metric.key || metric.label} metric={metric} />
+                          <div key={metric.key || metric.label} className="flex items-center gap-1.5">
+                            <span className="h-1 w-1 rounded-full bg-[var(--text-muted)] opacity-50"></span>
+                            <span className="text-xs tracking-tight text-[var(--text-muted)] whitespace-nowrap">
+                              <span className="font-medium text-[var(--text-secondary)] mr-0.5">{metric.label}:</span>
+                              {metric.value}
+                            </span>
+                          </div>
                         ))}
                       </div>
                     ) : (
                       <div
-                        className="truncate text-[11px] leading-5 text-[var(--text-muted)]"
+                        className="truncate text-xs text-[var(--text-muted)]"
                         title={getCompactStatusMeta(acc)}
                       >
                         {getCompactStatusMeta(acc)}
@@ -1881,25 +1989,31 @@ export default function Accounts() {
                     )}
                   </div>
                 </td>
-                <td className="px-4 py-2.5 align-top">
+                <td className="px-3 py-2.5 align-top">
                   {getCashierUrl(acc) ? (
-                    <div className="flex items-center gap-1 whitespace-nowrap">
-                      <button onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)]"><Copy className="h-3 w-3" /></button>
-                      <a href={getCashierUrl(acc)} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[var(--text-muted)] hover:text-[var(--text-accent)]"><ExternalLink className="h-3 w-3" /></a>
+                    <div className="flex items-center gap-1.5 whitespace-nowrap opacity-70 group-hover:opacity-100 transition-opacity">
+                      <button onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="复制链接"><Copy className="h-3 w-3" /></button>
+                      <a href={getCashierUrl(acc)} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="打开收银台"><ExternalLink className="h-3 w-3" /></a>
                     </div>
-                  ) : <span className="text-[var(--text-muted)] text-xs">-</span>}
+                  ) : <span className="text-[var(--text-muted)]/50 text-xs">-</span>}
                 </td>
-                <td className="px-4 py-2.5 text-[var(--text-muted)] text-xs whitespace-nowrap align-top">
-                  {acc.created_at ? new Date(acc.created_at).toLocaleString('zh-CN', { hour12: false }) : '-'}
+                <td className="px-3 py-2.5 font-mono text-xs text-[var(--text-muted)] whitespace-nowrap align-top">
+                  {acc.created_at ? new Date(acc.created_at).toLocaleString('zh-CN', { 
+                    month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit',
+                    hour12: false 
+                  }) : '-'}
                 </td>
-                <td className="px-4 py-2.5 align-top" onClick={e => e.stopPropagation()}>
-                  <ActionMenu
-                    acc={acc}
-                    onDetail={() => setDetail(acc)}
-                    onDelete={() => load()}
-                    onResult={(title, payload) => setActionResult({ title, payload })}
-                    onChanged={() => load()}
-                  />
+                <td className="px-3 py-2.5 align-top" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-end opacity-60 group-hover:opacity-100 transition-opacity">
+                    <ActionMenu
+                      acc={acc}
+                      onDetail={() => setDetail(acc)}
+                      onDelete={() => load()}
+                      onResult={(title, payload) => setActionResult({ title, payload })}
+                      onChanged={() => load()}
+                    />
+                  </div>
                 </td>
               </tr>
                 )

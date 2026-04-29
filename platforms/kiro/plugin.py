@@ -27,8 +27,18 @@ def _kiro_local_matches_target(current: dict, access_token: str, refresh_token: 
 @register
 class KiroPlatform(BasePlatform):
     name = "kiro"
-    display_name = "Kiro (AWS Builder ID)"
+    display_name = "Kiro"
     version = "1.0.0"
+    supported_executors = ["protocol", "headless", "headed"]
+    supported_identity_modes = ["mailbox"]
+    protocol_captcha_order = ("2captcha", "capsolver", "auto")
+
+    # Declarative capabilities
+    capabilities = [
+        "switch_desktop",   # Switch to desktop app
+        "refresh_token",    # Refresh token
+        "query_state",      # Query account state/quota
+    ]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)

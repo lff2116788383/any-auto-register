@@ -9,7 +9,7 @@ from .db import PlatformCapabilityOverrideModel, engine
 
 _registry: Dict[str, Type[BasePlatform]] = {}
 
-_CAPABILITY_KEYS = ("supported_executors", "supported_identity_modes", "supported_oauth_providers")
+_CAPABILITY_KEYS = ("supported_executors", "supported_identity_modes", "supported_oauth_providers", "capabilities")
 
 
 def _utcnow() -> datetime:
@@ -44,6 +44,7 @@ def _class_defaults(cls: Type[BasePlatform]) -> dict[str, list[str]]:
         "supported_executors": list(getattr(cls, "supported_executors", [])),
         "supported_identity_modes": list(getattr(cls, "supported_identity_modes", [])),
         "supported_oauth_providers": list(getattr(cls, "supported_oauth_providers", [])),
+        "capabilities": list(getattr(cls, "capabilities", [])),
     }
 
 
@@ -66,6 +67,21 @@ def _ensure_platform_capabilities_seeded(session: Session) -> dict[str, Platform
     changed = False
     for cls in _registry.values():
         if cls.name in by_name:
+            item = by_name[cls.name]
+            current = _normalize_platform_capabilities(item.get_capabilities(), cls)
+            defaults = _class_defaults(cls)
+            merged = {key: list(current.get(key, [])) for key in _CAPABILITY_KEYS}
+            did_merge = False
+            for key in _CAPABILITY_KEYS:
+                for value in defaults.get(key, []):
+                    if value not in merged[key]:
+                        merged[key].append(value)
+                        did_merge = True
+            if did_merge:
+                item.set_capabilities(merged)
+                item.updated_at = _utcnow()
+                session.add(item)
+                changed = True
             continue
         item = PlatformCapabilityOverrideModel(platform_name=cls.name)
         item.created_at = _utcnow()

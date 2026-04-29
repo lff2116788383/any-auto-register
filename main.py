@@ -16,7 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from api.account_checks import router as account_checks_router
 from api.accounts import router as accounts_router
 from api.actions import router as actions_router
+from api.auth import router as auth_router
 from api.config import router as config_router
+from core.auth import AuthMiddleware
 from api.health import router as health_router
 from api.lifecycle import router as lifecycle_router
 from api.local_microsoft_mailboxes import router as local_microsoft_mailboxes_router
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Account Manager", version="2.0.0", lifespan=lifespan)
 
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -75,6 +78,7 @@ app.add_middleware(
 app.include_router(accounts_router, prefix="/api")
 app.include_router(account_checks_router, prefix="/api")
 app.include_router(actions_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(lifecycle_router, prefix="/api")

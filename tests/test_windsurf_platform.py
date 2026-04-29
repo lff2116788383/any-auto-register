@@ -6,6 +6,9 @@ from core.base_platform import Account, RegisterConfig
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 from providers.captcha.local_solver import LocalSolverCaptcha
 from platforms.windsurf.plugin import WindsurfPlatform
+from platforms.windsurf.browser_register import WindsurfBrowserRegister
+from platforms.windsurf.browser_register import WindsurfStripeCheckoutBrowser
+from platforms.windsurf.browser_register import _extract_stripe_redirect_url
 from platforms.windsurf.core import (
     WINDSURF_BASE,
     WindsurfClient,
@@ -18,6 +21,7 @@ from platforms.windsurf.core import (
     parse_post_auth_response,
     parse_subscribe_to_plan_response,
 )
+from platforms.windsurf.plugin import _default_name
 
 
 def _plan_message(name: str = "Free") -> bytes:
@@ -98,6 +102,60 @@ def test_windsurf_subscribe_to_plan_parser_extracts_checkout_url():
     parsed = parse_subscribe_to_plan_response(payload)
 
     assert parsed["checkout_url"] == "https://checkout.stripe.com/c/pay/cs_live_test"
+
+
+def test_extract_stripe_redirect_url_prefers_alipay_redirect():
+    payload = {
+        "setup_intent": {
+            "next_action": {
+                "alipay_handle_redirect": {
+                    "url": "https://pm-redirects.stripe.com/authorize/test",
+                    "native_url": "alipay://native",
+                }
+            }
+        }
+    }
+
+    assert _extract_stripe_redirect_url(payload) == "https://pm-redirects.stripe.com/authorize/test"
+
+
+def test_extract_stripe_redirect_url_falls_back_to_redirect_to_url():
+    payload = {
+        "setup_intent": {
+            "next_action": {
+                "redirect_to_url": {
+                    "url": "https://example.com/redirect",
+                }
+            }
+        }
+    }
+
+    assert _extract_stripe_redirect_url(payload) == "https://example.com/redirect"
+
+
+def test_windsurf_alipay_url_classification_distinguishes_intermediate_and_cashier():
+    assert WindsurfStripeCheckoutBrowser._is_final_alipay_cashier_url("https://payauth.alipay.com/authorize.htm")
+    assert WindsurfStripeCheckoutBrowser._is_final_alipay_cashier_url("https://mobilecodec.alipay.com/show.htm?foo=bar")
+    assert not WindsurfStripeCheckoutBrowser._is_final_alipay_cashier_url("https://pm-redirects.stripe.com/authorize/test")
+    assert not WindsurfStripeCheckoutBrowser._is_final_alipay_cashier_url("https://openapi.alipay.com/gateway.do?foo=bar")
+    assert WindsurfStripeCheckoutBrowser._is_stripe_checkout_url("https://checkout.stripe.com/c/pay/cs_test")
+
+    assert (
+        WindsurfStripeCheckoutBrowser._next_intermediate_alipay_url(
+            redirect_url="https://pm-redirects.stripe.com/authorize/test",
+            gateway_url="",
+            fallback_url="",
+        )
+        == "https://pm-redirects.stripe.com/authorize/test"
+    )
+    assert (
+        WindsurfStripeCheckoutBrowser._next_intermediate_alipay_url(
+            redirect_url="https://payauth.alipay.com/authorize.htm",
+            gateway_url="https://openapi.alipay.com/gateway.do?foo=bar",
+            fallback_url="",
+        )
+        == "https://openapi.alipay.com/gateway.do?foo=bar"
+    )
 
 
 def test_windsurf_subscribe_to_plan_uses_turnstile_token_in_referer(monkeypatch):
@@ -291,6 +349,130 @@ def test_windsurf_generate_trial_link_refreshes_session_after_subscribe_401(monk
     assert calls == [("devin-session-token-old", "account-old"), ("devin-session-token-refreshed", "account-refreshed")]
 
 
+def test_windsurf_payment_link_returns_checkout_only(monkeypatch):
+    class Solver:
+        def solve_turnstile(self, page_url: str, site_key: str) -> str:
+            return "cf-turnstile-token"
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def check_pro_trial_eligibility(self, session_token: str, *, account_id: str = "", org_id: str = "") -> bool:
+            return True
+
+        def subscribe_to_plan(
+            self,
+            session_token: str,
+            *,
+            account_id: str = "",
+            org_id: str = "",
+            turnstile_token: str,
+            success_url: str = "",
+            cancel_url: str = "",
+        ) -> dict[str, str]:
+            return {"checkout_url": "https://checkout.stripe.com/c/pay/cs_test_windsurf"}
+
+    import platforms.windsurf.core as windsurf_core
+    monkeypatch.setattr(WindsurfPlatform, "_get_captcha_solver_candidates", lambda self: ["local_solver"])
+    monkeypatch.setattr(WindsurfPlatform, "_make_captcha", lambda self, **kwargs: Solver())
+    monkeypatch.setattr(
+        windsurf_core,
+        "extract_windsurf_account_context",
+        lambda account: {
+            "session_token": "devin-session-token",
+            "auth_token": "auth1-token",
+            "account_id": "account-123",
+            "org_id": "org-456",
+        },
+    )
+    monkeypatch.setattr(windsurf_core, "WindsurfClient", FakeClient)
+
+    platform = WindsurfPlatform(RegisterConfig(executor_type="protocol"))
+    account = Account(
+        platform="windsurf",
+        email="user@example.com",
+        password="",
+        token="devin-session-token",
+        extra={"name": "User Example"},
+    )
+
+    result = platform.execute_action("payment_link", account, {})
+
+    assert result["ok"] is True
+    assert result["data"]["payment_channel"] == "checkout"
+    assert result["data"]["cashier_url"] == "https://checkout.stripe.com/c/pay/cs_test_windsurf"
+    assert result["data"]["checkout_url"] == "https://checkout.stripe.com/c/pay/cs_test_windsurf"
+    assert result["data"]["trial_eligible"] is True
+
+
+def test_windsurf_payment_link_browser_uses_checkout_ui_flow(monkeypatch):
+    class Solver:
+        def solve_turnstile(self, page_url: str, site_key: str) -> str:
+            return "cf-turnstile-token"
+
+    import platforms.windsurf.browser_register as browser_register
+
+    monkeypatch.setattr(WindsurfPlatform, "_get_captcha_solver_candidates", lambda self: ["local_solver"])
+    monkeypatch.setattr(WindsurfPlatform, "_make_captcha", lambda self, **kwargs: Solver())
+    monkeypatch.setattr(
+        browser_register,
+        "generate_checkout_link_via_windsurf_ui",
+        lambda **kwargs: {
+            "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_ui",
+            "cashier_url": "https://checkout.stripe.com/c/pay/cs_test_ui",
+            "url": "https://checkout.stripe.com/c/pay/cs_test_ui",
+            "payment_channel": "checkout",
+        },
+    )
+
+    platform = WindsurfPlatform(RegisterConfig(executor_type="protocol"))
+    account = Account(
+        platform="windsurf",
+        email="user@example.com",
+        password="secret-password",
+        token="devin-session-token",
+    )
+
+    result = platform.execute_action("payment_link_browser", account, {})
+
+    assert result["ok"] is True
+    assert result["data"]["payment_channel"] == "checkout"
+    assert result["data"]["cashier_url"] == "https://checkout.stripe.com/c/pay/cs_test_ui"
+    assert result["data"]["checkout_url"] == "https://checkout.stripe.com/c/pay/cs_test_ui"
+    assert result["data"]["message"] == "Windsurf Pro Trial Stripe 链接已生成"
+
+
+def test_windsurf_payment_link_browser_can_return_checkout_only(monkeypatch):
+    import platforms.windsurf.browser_register as browser_register
+
+    monkeypatch.setattr(
+        browser_register,
+        "generate_checkout_link_via_windsurf_ui",
+        lambda **kwargs: {
+            "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_checkout_only",
+            "cashier_url": "https://checkout.stripe.com/c/pay/cs_test_checkout_only",
+            "url": "https://checkout.stripe.com/c/pay/cs_test_checkout_only",
+            "payment_channel": "checkout",
+        },
+    )
+
+    platform = WindsurfPlatform(RegisterConfig(executor_type="protocol"))
+    account = Account(
+        platform="windsurf",
+        email="user@example.com",
+        password="secret-password",
+        token="devin-session-token",
+    )
+
+    result = platform.execute_action("payment_link_browser", account, {"payment_channel": "checkout"})
+
+    assert result["ok"] is True
+    assert result["data"]["payment_channel"] == "checkout"
+    assert result["data"]["cashier_url"] == "https://checkout.stripe.com/c/pay/cs_test_checkout_only"
+    assert result["data"]["message"] == "Windsurf Pro Trial Stripe 链接已生成"
+
+
 def test_local_solver_surfaces_unsolvable_error(monkeypatch):
     class FakeResponse:
         def __init__(self, payload: dict):
@@ -331,3 +513,14 @@ def test_local_solver_surfaces_unsolvable_error(monkeypatch):
     else:
         raise AssertionError("expected LocalSolver error")
     assert calls["count"] == 2
+
+
+def test_windsurf_default_name_strips_digits_from_email_localpart():
+    assert _default_name("SyptKGB1@coolkid.icu") == "Syptkgb"
+    assert _default_name("123456@test.com") == "Windsurf User"
+
+
+def test_windsurf_browser_split_name_sanitizes_non_letters():
+    assert WindsurfBrowserRegister._split_name("SyptKGB1") == ("Syptkgb", "User")
+    assert WindsurfBrowserRegister._split_name("a1b2 c3d4") == ("Ab", "Cd")
+    assert WindsurfBrowserRegister._split_name("1234") == ("Windsurf", "User")

@@ -50,6 +50,20 @@ class ChatGPTPlatform(BasePlatform):
     name = "chatgpt"
     display_name = "ChatGPT"
     version = "1.0.0"
+    supported_executors = ["protocol", "headless", "headed"]
+    supported_identity_modes = ["mailbox", "oauth_browser"]
+    supported_oauth_providers = ["google", "microsoft"]
+    protocol_captcha_order = ("2captcha", "capsolver", "auto")
+
+    # Declarative capabilities
+    capabilities = [
+        "query_state",      # Query account state/quota
+        "refresh_token",    # Refresh auth token
+        "generate_link",    # Generate payment link
+        "switch_desktop",   # Switch to Codex desktop
+        "upload_cpa",       # Upload to CPA system
+        "upload_tm",        # Upload to Team Manager
+    ]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)
@@ -296,7 +310,8 @@ class ChatGPTPlatform(BasePlatform):
 
         return get_codex_desktop_state()
 
-    def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
+    def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
+        """Handle ChatGPT-specific actions."""
         proxy = self.config.proxy if self.config else None
         extra = account.extra or {}
 
@@ -313,7 +328,7 @@ class ChatGPTPlatform(BasePlatform):
         a.user_id = account.user_id or ""
         a.account_id = account.user_id or ""
 
-        if action_id == "switch_account":
+        if action_id == "switch_desktop":
             from platforms.chatgpt.switch import (
                 close_codex_app,
                 extract_session_token,
@@ -326,12 +341,12 @@ class ChatGPTPlatform(BasePlatform):
 
             session_token = extract_session_token(a.session_token, a.cookies)
             if not session_token:
-                return {"ok": False, "error": "账号缺少 session_token 或可用 cookie，无法切换到本地 Codex 桌面端"}
+                return {"ok": False, "error": "Switch to Codex desktop requires session_token"}
 
             close_ok, close_msg = close_codex_app()
             switch_ok, switch_data = switch_codex_account(session_token=session_token, cookies=a.cookies)
             if not switch_ok:
-                return {"ok": False, "error": switch_data.get("error", "切换失败")}
+                return {"ok": False, "error": switch_data.get("error", "Switch failed")}
 
             remote_state = fetch_chatgpt_account_state(
                 access_token=a.access_token,
@@ -341,13 +356,13 @@ class ChatGPTPlatform(BasePlatform):
             )
             local_state = read_current_codex_account()
             restart_ok, restart_msg = restart_codex_app()
-            message_parts = [switch_data.get("message", "已写入本地 Codex 凭证")]
+            message_parts = [switch_data.get("message", "Codex credentials written")]
             if close_msg:
                 message_parts.append(close_msg)
             if restart_msg:
                 message_parts.append(restart_msg)
             data = {
-                "message": "。".join(part for part in message_parts if part),
+                "message": ".".join(part for part in message_parts if part),
                 "close": {"ok": close_ok, "message": close_msg},
                 "restart": {"ok": restart_ok, "message": restart_msg},
                 "local_app_account": local_state,
@@ -361,69 +376,104 @@ class ChatGPTPlatform(BasePlatform):
                 data["refresh_token"] = remote_state["refresh_token"]
             return {"ok": True, "data": data}
 
-        if action_id == "get_account_state":
-            from platforms.chatgpt.switch import fetch_chatgpt_account_state, get_codex_desktop_state, read_current_codex_account
-
-            data = fetch_chatgpt_account_state(
-                access_token=a.access_token,
-                session_token=a.session_token,
-                cookies=a.cookies,
-                proxy=proxy,
-            )
-            data["local_app_account"] = read_current_codex_account()
-            data["desktop_app_state"] = get_codex_desktop_state()
-            return {"ok": True, "data": data}
-
-        if action_id == "refresh_token":
-            from platforms.chatgpt.token_refresh import TokenRefreshManager
-            manager = TokenRefreshManager(proxy_url=proxy)
-            result = manager.refresh_account(a)
-            if result.success:
-                data = {"access_token": result.access_token, "refresh_token": result.refresh_token}
-                try:
-                    from platforms.chatgpt.switch import fetch_chatgpt_account_state
-                    data["account_state"] = fetch_chatgpt_account_state(
-                        access_token=result.access_token,
-                        session_token=a.session_token,
-                        cookies=a.cookies,
-                        proxy=proxy,
-                    )
-                except Exception:
-                    pass
-                return {"ok": True, "data": data}
-            return {"ok": False, "error": result.error_message}
-
-        elif action_id == "payment_link":
-            from platforms.chatgpt.payment import generate_plus_link, generate_team_link, open_url_incognito
-            plan = params.get("plan", "plus")
-            country = params.get("country", "US")
-            
-            # 手动拼凑基础 cookie，以防历史老账号没有保存完整的 cookie 字符串
-            if not a.cookies and a.session_token:
-                a.cookies = f"__Secure-next-auth.session-token={a.session_token}"
-                
-            if plan == "plus":
-                url = generate_plus_link(a, proxy=proxy, country=country)
-            else:
-                url = generate_team_link(a, proxy=proxy, country=country)
-            
-            # 使用本地指纹浏览器无痕挂载 Cookie 强制打开支付页面（防止直接在自己浏览器被踢出登录）
-            if url and a.cookies:
-                open_url_incognito(url, a.cookies)
-                
-            return {"ok": bool(url), "data": {"url": url, "message": "支付链接已生成，正在启动带凭证的独立无痕浏览器..."}}
-
-        elif action_id == "upload_cpa":
+        if action_id == "upload_cpa":
             from platforms.chatgpt.cpa_upload import upload_to_cpa, generate_token_json
             token_data = generate_token_json(a)
             ok, msg = upload_to_cpa(token_data, api_url=params.get("api_url"),
                                     api_key=params.get("api_key"))
             return {"ok": ok, "data": msg}
 
-        elif action_id == "upload_tm":
+        if action_id == "upload_tm":
             from platforms.chatgpt.cpa_upload import upload_to_team_manager
             ok, msg = upload_to_team_manager(a, api_url=params.get("api_url"),
                                              api_key=params.get("api_key"))
             return {"ok": ok, "data": msg}
 
-        raise NotImplementedError(f"未知操作: {action_id}")
+        raise NotImplementedError(f"Unknown action: {action_id}")
+
+    # Override specific capability handlers
+    def _handle_query_state(self, account: Account, params: dict) -> dict:
+        """Handle query_state capability for ChatGPT."""
+        proxy = self.config.proxy if self.config else None
+        extra = account.extra or {}
+
+        class _A: pass
+        a = _A()
+        a.access_token = extra.get("access_token") or account.token
+        a.session_token = extra.get("session_token", "")
+        a.cookies = extra.get("cookies", "")
+
+        from platforms.chatgpt.switch import fetch_chatgpt_account_state, get_codex_desktop_state, read_current_codex_account
+
+        data = fetch_chatgpt_account_state(
+            access_token=a.access_token,
+            session_token=a.session_token,
+            cookies=a.cookies,
+            proxy=proxy,
+        )
+        data["local_app_account"] = read_current_codex_account()
+        data["desktop_app_state"] = get_codex_desktop_state()
+        return {"ok": True, "data": data}
+
+    def _handle_refresh_token(self, account: Account, params: dict) -> dict:
+        """Handle refresh_token capability for ChatGPT."""
+        proxy = self.config.proxy if self.config else None
+        extra = account.extra or {}
+
+        class _A: pass
+        a = _A()
+        a.access_token = extra.get("access_token") or account.token
+        a.refresh_token = extra.get("refresh_token", "")
+        a.session_token = extra.get("session_token", "")
+        a.cookies = extra.get("cookies", "")
+
+        from platforms.chatgpt.token_refresh import TokenRefreshManager
+        manager = TokenRefreshManager(proxy_url=proxy)
+        result = manager.refresh_account(a)
+        if result.success:
+            data = {"access_token": result.access_token, "refresh_token": result.refresh_token}
+            try:
+                from platforms.chatgpt.switch import fetch_chatgpt_account_state
+                data["account_state"] = fetch_chatgpt_account_state(
+                    access_token=result.access_token,
+                    session_token=a.session_token,
+                    cookies=a.cookies,
+                    proxy=proxy,
+                )
+            except Exception:
+                pass
+            return {"ok": True, "data": data}
+        return {"ok": False, "error": result.error_message}
+
+    def _handle_generate_link(self, account: Account, params: dict) -> dict:
+        """Handle generate_link capability for ChatGPT."""
+        proxy = self.config.proxy if self.config else None
+        extra = account.extra or {}
+
+        class _A: pass
+        a = _A()
+        a.email = account.email
+        a.password = account.password
+        a.session_token = extra.get("session_token", "")
+        a.cookies = extra.get("cookies", "")
+
+        from platforms.chatgpt.payment import generate_plus_link, generate_team_link, open_url_incognito
+        plan = params.get("plan", "plus")
+        country = params.get("country", "US")
+
+        # Manually construct basic cookie in case old accounts don't have complete cookie string
+        if not a.cookies and a.session_token:
+            a.cookies = f"__Secure-next-auth.session-token={a.session_token}"
+
+        if plan == "plus":
+            url = generate_plus_link(a, proxy=proxy, country=country)
+        else:
+            url = generate_team_link(a, proxy=proxy, country=country)
+
+        # Use local fingerprint browser incognito to mount Cookie and force open payment page
+        if url and a.cookies:
+            open_url_incognito(url, a.cookies)
+
+        return {"ok": bool(url), "data": {"url": url, "message": "Payment link generated, opening browser with credentials..."}} 
+
+    

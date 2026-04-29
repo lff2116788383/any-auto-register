@@ -17,6 +17,7 @@ class ActionsService:
                 {
                     "id": action.id,
                     "label": action.label,
+                    "sync": action.sync,
                     "params": [
                         {
                             "key": param.key,
@@ -30,8 +31,18 @@ class ActionsService:
                 for action in actions
             ]
         }
+    
+    def list_capabilities(self, platform: str) -> list[str]:
+        return self.runtime.list_capabilities(platform)
+
+    def _is_sync_action(self, platform: str, action_id: str) -> bool:
+        actions = self.runtime.list_actions(platform)
+        return any(a.id == action_id and a.sync for a in actions)
 
     def execute_action(self, command: ActionExecutionCommand) -> dict:
+        if self._is_sync_action(command.platform, command.action_id):
+            result = self.runtime.execute_action(command)
+            return {"sync": True, "ok": result.ok, "data": result.data, "error": result.error}
         task = create_platform_action_task(
             {
                 "platform": command.platform,

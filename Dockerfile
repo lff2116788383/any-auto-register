@@ -28,10 +28,15 @@ WORKDIR /app
 # 安装 Python 依赖
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Solver 额外依赖
+RUN pip install --no-cache-dir quart rich
 
-# 安装 Playwright 浏览器
+# 安装 Playwright 浏览器（供 solver 使用）
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install chromium --with-deps || true
+
+# 安装 camoufox 浏览器（供 solver 使用）
+RUN python -c "import camoufox; camoufox.install()" || true
 
 # 复制后端代码
 COPY . .
@@ -44,6 +49,10 @@ COPY --from=frontend-builder /app/static ./static
 # 启动脚本
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+
+# APP_PASSWORD: 设置后需要密码才能访问 Web UI 和 API
+# 不设置则无密码保护（适用于本地使用）
+ENV APP_PASSWORD=""
 
 EXPOSE 8000 6080
 

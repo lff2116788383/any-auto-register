@@ -287,6 +287,13 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
         { key: 'team_manager_url', label: 'API URL', placeholder: 'https://your-tm.example.com' },
         { key: 'team_manager_key', label: 'API Key', secret: true },
       ],
+    }, {
+      section: 'Any2Api',
+      desc: '同步账号到 Any2Api 服务，用于导出和对接',
+      items: [
+        { key: 'any2api_url', label: 'API URL', placeholder: 'https://your-any2api.example.com' },
+        { key: 'any2api_password', label: 'Password', secret: true },
+      ],
     }],
   },
 ]

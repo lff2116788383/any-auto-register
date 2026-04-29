@@ -10,7 +10,7 @@ from domain.platform_caps import PlatformCapabilitiesUpdate
 
 
 class PlatformCapabilitiesRepository:
-    ALLOWED_KEYS = {"supported_executors", "supported_identity_modes", "supported_oauth_providers"}
+    ALLOWED_KEYS = {"supported_executors", "supported_identity_modes", "supported_oauth_providers", "capabilities"}
 
     @staticmethod
     def _utcnow() -> datetime:
@@ -24,6 +24,7 @@ class PlatformCapabilitiesRepository:
             "supported_executors": update.supported_executors,
             "supported_identity_modes": update.supported_identity_modes,
             "supported_oauth_providers": update.supported_oauth_providers,
+            "capabilities": update.capabilities,
         }
         safe = {key: value for key, value in payload.items() if key in self.ALLOWED_KEYS}
         with Session(engine) as session:

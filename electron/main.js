@@ -8,6 +8,7 @@ const isDev = !app.isPackaged
 
 let backendProcess = null
 let mainWindow = null
+let splashWindow = null
 
 function getBackendPath() {
   if (isDev) {
@@ -41,7 +42,8 @@ function startBackend() {
   })
 }
 
-function waitForBackend(retries = 90) {
+function waitForBackend(retries = 180, onProgress = null) {
+  const total = retries
   return new Promise((resolve, reject) => {
     let backendExited = false
 
@@ -59,17 +61,67 @@ function waitForBackend(retries = 90) {
         return
       }
 
+      if (onProgress) {
+        onProgress(total - n, total)
+      }
+
       http.get(`http://localhost:${PORT}/api/health`, (res) => {
         if (res.statusCode < 500) resolve()
         else if (n > 0) setTimeout(() => attempt(n - 1), 1000)
-        else reject(new Error('后端启动超时（90秒），请检查防火墙或端口占用'))
+        else reject(new Error('后端启动超时（180秒），请检查防火墙或端口占用'))
       }).on('error', () => {
         if (n > 0) setTimeout(() => attempt(n - 1), 1000)
-        else reject(new Error('后端启动超时（90秒），请检查防火墙或端口占用'))
+        else reject(new Error('后端启动超时（180秒），请检查防火墙或端口占用'))
       })
     }
     attempt(retries)
   })
+}
+
+function createSplash() {
+  splashWindow = new BrowserWindow({
+    width: 360,
+    height: 200,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    webPreferences: { contextIsolation: true },
+  })
+
+  const html = `
+    <html>
+    <head><meta charset="utf-8"><style>
+      body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:rgba(17,23,35,0.95); color:#f3f7ff; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; -webkit-app-region:drag; border-radius:16px; }
+      h1 { font-size:16px; font-weight:600; margin:0 0 8px; }
+      p { font-size:12px; color:#6c7a92; margin:0 0 16px; }
+      .bar { width:200px; height:4px; background:rgba(127,178,255,0.15); border-radius:2px; overflow:hidden; }
+      .bar-inner { height:100%; background:linear-gradient(90deg,#7fb2ff,#8de3ff); border-radius:2px; transition:width 0.3s; }
+    </style></head>
+    <body>
+      <h1>Account Manager</h1>
+      <p id="msg">正在启动后端服务...</p>
+      <div class="bar"><div class="bar-inner" id="progress" style="width:0%"></div></div>
+    </body>
+    </html>`
+
+  splashWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+}
+
+function updateSplashProgress(current, total) {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  const pct = Math.min(Math.round((current / total) * 100), 99)
+  splashWindow.webContents.executeJavaScript(
+    `document.getElementById('progress').style.width='${pct}%';` +
+    `document.getElementById('msg').textContent='正在启动后端服务... (${current}s)';`
+  ).catch(() => {})
+}
+
+function closeSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.close()
+    splashWindow = null
+  }
 }
 
 function createWindow() {
@@ -77,21 +129,28 @@ function createWindow() {
     width: 1280,
     height: 800,
     title: 'Account Manager',
+    show: false,
     webPreferences: {
       contextIsolation: true,
     },
   })
 
   mainWindow.loadURL(`http://localhost:${PORT}`)
+  mainWindow.once('ready-to-show', () => {
+    closeSplash()
+    mainWindow.show()
+  })
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
 app.whenReady().then(async () => {
+  createSplash()
   startBackend()
 
   try {
-    await waitForBackend()
+    await waitForBackend(180, updateSplashProgress)
   } catch (err) {
+    closeSplash()
     dialog.showErrorBox('启动失败', err.message)
     app.quit()
     return

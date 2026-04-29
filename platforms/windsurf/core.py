@@ -443,6 +443,8 @@ class WindsurfClient:
         *,
         account_id: str = "",
         org_id: str = "",
+        session_token: str = "",
+        auth1_token: str = "",
         referer: str = "/profile",
     ) -> bytes:
         headers = {
@@ -459,6 +461,11 @@ class WindsurfClient:
             headers["x-devin-account-id"] = account_id
         if org_id:
             headers["x-devin-primary-org-id"] = org_id
+        if session_token:
+            headers["x-devin-session-token"] = session_token
+            headers["x-auth-token"] = session_token
+        if auth1_token:
+            headers["x-devin-auth1-token"] = auth1_token
         response = self.s.post(
             f"{WINDSURF_BASE}{SEAT_SERVICE}/{method}",
             data=body,
@@ -502,6 +509,29 @@ class WindsurfClient:
         if not auth_token:
             raise RuntimeError("Windsurf 未返回 auth token")
         return data
+
+    def login_with_password(self, email: str, password: str) -> dict[str, str]:
+        """用邮箱+密码登录已有账号，返回 session_token 等信息"""
+        self.log(f"密码登录 Windsurf: {email}")
+        start_data = self._json_post(
+            "/_devin-auth/email/start",
+            {"email": email, "mode": "login", "product": "Windsurf"},
+        )
+        verification_token = _as_text(start_data.get("email_verification_token"))
+        if not verification_token:
+            raise RuntimeError("Windsurf 登录未返回 email_verification_token")
+        data = self._json_post(
+            "/_devin-auth/email/complete",
+            {
+                "email_verification_token": verification_token,
+                "mode": "login",
+                "password": password,
+            },
+        )
+        auth_token = _as_text(data.get("token"))
+        if not auth_token:
+            raise RuntimeError("Windsurf 密码登录未返回 auth token")
+        return self.post_auth(auth_token)
 
     def post_auth(self, auth_token: str) -> dict[str, str]:
         self.log("Step3: 兑换 Windsurf session")
@@ -567,6 +597,7 @@ class WindsurfClient:
         *,
         account_id: str = "",
         org_id: str = "",
+        auth1_token: str = "",
         turnstile_token: str,
         success_url: str = "",
         cancel_url: str = "",
@@ -591,6 +622,8 @@ class WindsurfClient:
             body,
             account_id=account_id,
             org_id=org_id,
+            session_token=session_token,
+            auth1_token=auth1_token,
             referer=billing_referer,
         )
         result = parse_subscribe_to_plan_response(content)

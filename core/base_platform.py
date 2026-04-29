@@ -51,6 +51,10 @@ class BasePlatform(ABC):
     supported_identity_modes: list = []
     supported_oauth_providers: list = []
     protocol_captcha_order: tuple[str, ...] = ()
+    # Declarative capabilities - override in subclasses
+    capabilities: list[str] = []
+    # Per-capability label/param overrides - override in subclasses
+    capability_overrides: dict[str, dict] = {}
 
     def __init__(self, config: RegisterConfig = None):
         from core.registry import get_platform_capabilities
@@ -61,6 +65,9 @@ class BasePlatform(ABC):
         self.supported_executors = list(capabilities.get("supported_executors", [])) or list(self.supported_executors)
         self.supported_identity_modes = list(capabilities.get("supported_identity_modes", [])) or list(self.supported_identity_modes)
         self.supported_oauth_providers = list(capabilities.get("supported_oauth_providers", [])) or list(self.supported_oauth_providers)
+        db_caps = list(capabilities.get("capabilities", []))
+        if db_caps:
+            self.capabilities = db_caps
         if self.config.executor_type not in self.supported_executors:
             raise NotImplementedError(
                 f"{self.display_name} 暂不支持 '{self.config.executor_type}' 执行器，"
@@ -163,9 +170,17 @@ class BasePlatform(ABC):
 
     def get_platform_actions(self) -> list:
         """
-        返回平台支持的额外操作列表，每项格式:
+        Return platform-supported extra operation list, each item format:
         {"id": str, "label": str, "params": [{"key": str, "label": str, "type": str}]}
+        
+        For backward compatibility, this now uses the capability system.
+        Override this method in platform classes for custom actions.
         """
+        # Use capability system if capabilities are defined
+        if hasattr(self, 'capabilities') and self.capabilities:
+            return self.get_capability_actions()
+        
+        # Fallback to empty list for platforms that haven't migrated yet
         return []
 
     def get_desktop_state(self) -> dict:
@@ -176,9 +191,123 @@ class BasePlatform(ABC):
 
     def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
         """
-        执行平台特定操作，返回 {"ok": bool, "data": any, "error": str}
+        Execute platform-specific action, return {"ok": bool, "data": any, "error": str}
         """
-        raise NotImplementedError(f"平台 {self.name} 不支持操作: {action_id}")
+        # Try to handle as standard capability first
+        if action_id in self.capabilities:
+            return self._handle_capability(action_id, account, params)
+        
+        # Fallback to platform-specific implementation
+        raise NotImplementedError(f"Platform {self.name} does not support action: {action_id}")
+    
+    def _handle_capability(self, capability_id: str, account: Account, params: dict) -> dict:
+        """Handle standard capabilities with default implementations."""
+        try:
+            if capability_id == "query_state":
+                return self._handle_query_state(account, params)
+            elif capability_id == "refresh_token":
+                return self._handle_refresh_token(account, params)
+            elif capability_id == "generate_link":
+                return self._handle_generate_link(account, params)
+            elif capability_id == "switch_desktop":
+                return self._handle_switch_desktop(account, params)
+            elif capability_id == "upload_cpa":
+                return self._handle_upload_cpa(account, params)
+            elif capability_id == "upload_tm":
+                return self._handle_upload_tm(account, params)
+            elif capability_id == "check_trial":
+                return self._handle_check_trial(account, params)
+            elif capability_id == "generate_link_browser":
+                return self._handle_generate_link_browser(account, params)
+            elif capability_id == "create_api_key":
+                return self._handle_create_api_key(account, params)
+            else:
+                # Fall back to platform-specific implementation
+                return self._execute_platform_action(capability_id, account, params)
+        except NotImplementedError:
+            # If platform doesn't implement the capability, return error
+            return {"ok": False, "error": f"Capability {capability_id} not implemented for {self.display_name}"}
+    
+    def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
+        """Override this method in platform classes for custom actions."""
+        raise NotImplementedError(f"Platform {self.name} does not implement action: {action_id}")
+    
+    # Default handlers for standard capabilities
+    def _handle_query_state(self, account: Account, params: dict) -> dict:
+        """Default query_state handler - calls get_quota or returns basic state."""
+        quota_data = self.get_quota(account)
+        if quota_data:
+            return {"ok": True, "data": quota_data}
+        return {
+            "ok": True, 
+            "data": {
+                "status": account.status.value,
+                "user_id": account.user_id,
+                "email": account.email,
+                "platform": account.platform,
+            }
+        }
+    
+    def _handle_refresh_token(self, account: Account, params: dict) -> dict:
+        """Default refresh_token handler - platform should override."""
+        raise NotImplementedError(f"Token refresh not implemented for {self.display_name}")
+    
+    def _handle_generate_link(self, account: Account, params: dict) -> dict:
+        """Default generate_link handler - calls get_trial_url."""
+        trial_url = self.get_trial_url(account)
+        if trial_url:
+            return {"ok": True, "data": {"url": trial_url, "message": "Trial link generated"}}
+        raise NotImplementedError(f"Link generation not implemented for {self.display_name}")
+    
+    def _handle_switch_desktop(self, account: Account, params: dict) -> dict:
+        """Default switch_desktop handler - platform should override."""
+        raise NotImplementedError(f"Desktop switch not implemented for {self.display_name}")
+    
+    def _handle_upload_cpa(self, account: Account, params: dict) -> dict:
+        """Default upload_cpa handler - platform should override."""
+        raise NotImplementedError(f"CPA upload not implemented for {self.display_name}")
+    
+    def _handle_upload_tm(self, account: Account, params: dict) -> dict:
+        """Default upload_tm handler - platform should override."""
+        raise NotImplementedError(f"Team Manager upload not implemented for {self.display_name}")
+    
+    def _handle_check_trial(self, account: Account, params: dict) -> dict:
+        """Default check_trial handler - platform should override."""
+        raise NotImplementedError(f"Trial check not implemented for {self.display_name}")
+    
+    def _handle_generate_link_browser(self, account: Account, params: dict) -> dict:
+        """Default generate_link_browser handler - platform should override."""
+        raise NotImplementedError(f"Browser link generation not implemented for {self.display_name}")
+    
+    def _handle_create_api_key(self, account: Account, params: dict) -> dict:
+        """Default create_api_key handler - platform should override."""
+        raise NotImplementedError(f"API key creation not implemented for {self.display_name}")
+    
+    def get_platform_capabilities(self) -> list:
+        """Return the platform's declared capabilities."""
+        return list(getattr(self, 'capabilities', []))
+    
+    def get_capability_actions(self) -> list:
+        """
+        Return actions list for backward compatibility.
+        Maps capabilities to action definitions, with per-platform overrides.
+        """
+        from .capability_registry import CapabilityRegistry
+        
+        overrides = getattr(self, 'capability_overrides', {}) or {}
+        actions = []
+        for cap_id in self.get_platform_capabilities():
+            definition = CapabilityRegistry.get_definition(cap_id)
+            if definition:
+                override = overrides.get(cap_id, {})
+                action = {
+                    "id": definition.id,
+                    "label": override.get("label", definition.label),
+                    "params": override.get("params", definition.param_schema),
+                    "sync": override.get("sync", True),
+                }
+                actions.append(action)
+        return actions
 
     def get_quota(self, account: Account) -> dict:
         """查询账号配额（可选实现）"""

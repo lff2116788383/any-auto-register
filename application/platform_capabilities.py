@@ -16,6 +16,7 @@ class PlatformCapabilitiesService:
             supported_executors=list(payload.get("supported_executors", []) or []),
             supported_identity_modes=list(payload.get("supported_identity_modes", []) or []),
             supported_oauth_providers=list(payload.get("supported_oauth_providers", []) or []),
+            capabilities=list(payload.get("capabilities", []) or []),
         )
         return self.repository.update(name, update)
 

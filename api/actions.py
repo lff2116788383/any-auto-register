@@ -19,6 +19,11 @@ def list_actions(platform: str):
     return service.list_actions(platform)
 
 
+@router.get("/{platform}/capabilities")
+def list_capabilities(platform: str):
+    return service.list_capabilities(platform)
+
+
 @router.post("/{platform}/{account_id}/{action_id}")
 def execute_action(platform: str, account_id: int, action_id: str, body: ActionRequest):
     task = service.execute_action(
